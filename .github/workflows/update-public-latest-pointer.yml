@@ -1,0 +1,76 @@
+name: Update public Gaia-run pointer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/update-public-latest-pointer.yml"
+      - "results/public/runs/**"
+
+concurrency:
+  group: hou-compact-public-latest-pointer
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  update-pointer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build candidate-safe latest pointer
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          receipts = []
+          for path in Path('results/public/runs').glob('*.json'):
+              try:
+                  run_id = int(path.stem)
+                  payload = json.loads(path.read_text(encoding='utf-8'))
+              except (ValueError, json.JSONDecodeError):
+                  continue
+              receipts.append((run_id, path, payload))
+          if not receipts:
+              raise RuntimeError('no public run receipts found')
+          run_id, path, payload = max(receipts, key=lambda item: item[0])
+          gaia = payload.get('gaia') or {}
+          pointer = {
+              'latest_run_id': run_id,
+              'receipt_path': str(path),
+              'query_version': payload.get('query_version'),
+              'trigger_sha': payload.get('trigger_sha'),
+              'step_outcomes': payload.get('step_outcomes'),
+              'gaia_status': gaia.get('status'),
+              'gaia_row_count': gaia.get('row_count'),
+              'gaia_error_type': gaia.get('error_type'),
+              'gaia_error_message': gaia.get('error_message'),
+              'covariance_reference': payload.get('covariance_reference'),
+              'primary_mass': payload.get('primary_mass'),
+              'correlated_masses': payload.get('correlated_masses'),
+              'contamination_audit': payload.get('contamination_audit'),
+              'desi_file_plan': payload.get('desi_file_plan'),
+              'desi_probe': payload.get('desi_probe'),
+              'claim_boundary': (
+                  'Candidate-safe aggregate receipt only; no source identifiers or '
+                  'compact-object classifications are included.'
+              ),
+          }
+          output = Path('results/public/LATEST.json')
+          output.parent.mkdir(parents=True, exist_ok=True)
+          output.write_text(
+              json.dumps(pointer, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(pointer, indent=2, sort_keys=True))
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin main
+          git add results/public/LATEST.json
+          git commit -m "Update public HOU-COMPACT latest-run pointer" || exit 0
+          git push origin HEAD:main
