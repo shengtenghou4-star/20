@@ -1,4 +1,4 @@
-name: gaia-pilot
+name: gaia-sb1-desi-overlap-pilot
 
 on:
   workflow_dispatch:
@@ -6,17 +6,20 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/gaia-pilot.yml"
-      - "queries/gaia_seed_pilot.adql"
+      - "queries/gaia_sb1_mass_proxy_pilot_v2.adql"
       - "src/hou_compact/gaia.py"
+      - "src/hou_compact/desi.py"
       - "scripts/run_gaia_query.py"
+      - "scripts/plan_desi_files.py"
+      - "scripts/probe_desi_files.py"
 
 permissions:
   contents: read
 
 jobs:
-  acquire:
+  acquire-and-probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,8 +28,24 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install -e .
-      - name: Execute frozen Gaia pilot query
-        run: python scripts/run_gaia_query.py --output outputs/gaia_seed_pilot.ecsv
+      - name: Execute frozen Gaia SB1 pilot query
+        run: |
+          python scripts/run_gaia_query.py \
+            --query queries/gaia_sb1_mass_proxy_pilot_v2.adql \
+            --output outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv
+      - name: Plan DESI single-epoch files
+        run: |
+          python scripts/plan_desi_files.py \
+            outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv \
+            --output outputs/desi_single_epoch_plan.csv
+      - name: Probe DESI overlap without bulk download
+        run: |
+          python scripts/probe_desi_files.py \
+            outputs/desi_single_epoch_plan.csv \
+            --output outputs/desi_probe.csv \
+            --workers 24 \
+            --timeout 20 \
+            --retries 2
       - name: Record workflow provenance
         run: |
           python - <<'PY'
@@ -42,10 +61,14 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: gaia-seed-pilot
+          name: gaia-sb1-desi-overlap-pilot
           path: |
-            outputs/gaia_seed_pilot.ecsv
-            outputs/gaia_seed_pilot.ecsv.manifest.json
+            outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv
+            outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv.manifest.json
+            outputs/desi_single_epoch_plan.csv
+            outputs/desi_single_epoch_plan.csv.manifest.json
+            outputs/desi_probe.csv
+            outputs/desi_probe.csv.manifest.json
             outputs/github_actions_provenance.json
           if-no-files-found: error
           retention-days: 30
