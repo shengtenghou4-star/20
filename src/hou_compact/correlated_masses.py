@@ -52,7 +52,8 @@ def _draw_physical_orbital_samples(
         raise ValueError("n_draws must be at least 100")
 
     accepted: list[np.ndarray] = []
-    accepted_count = 0
+    retained_count = 0
+    physically_valid_count = 0
     proposed_count = 0
     batch_size = max(1024, min(50_000, n_draws * 2))
     for _ in range(max_batches):
@@ -67,17 +68,18 @@ def _draw_physical_orbital_samples(
         valid = (proposals[:, 0] > 0) & (proposals[:, 1] > 0)
         if has_eccentricity:
             valid &= (proposals[:, 2] >= 0) & (proposals[:, 2] < 1)
+        physically_valid_count += int(np.sum(valid))
         selected = proposals[valid]
         if selected.size:
-            needed = n_draws - accepted_count
+            needed = n_draws - retained_count
             selected = selected[:needed]
             accepted.append(selected)
-            accepted_count += len(selected)
-        if accepted_count >= n_draws:
+            retained_count += len(selected)
+        if retained_count >= n_draws:
             combined = np.concatenate(accepted, axis=0)
-            return combined, accepted_count / proposed_count
+            return combined, physically_valid_count / proposed_count
     raise RuntimeError(
-        f"only accepted {accepted_count} of {n_draws} physical orbital draws"
+        f"only retained {retained_count} of {n_draws} requested physical orbital draws"
     )
 
 
