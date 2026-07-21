@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local data and generated products
+data/raw/
+data/interim/
+data/cache/
+outputs/
+artifacts/
+*.fits
+*.fits.gz
+*.parquet
+*.feather
+*.h5
+*.hdf5
+
+# Keep directory contracts
+!data/raw/.gitkeep
+!data/interim/.gitkeep
+!outputs/.gitkeep
+
+# Credentials and local settings
+.env
+*.token
+*.pem
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
