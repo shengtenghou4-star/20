@@ -1,3 +1,6 @@
+import json
+
+import numpy as np
 import pytest
 
 from hou_compact.candidate_cards import (
@@ -47,6 +50,26 @@ def test_explicit_private_identity_mode_can_include_source_id() -> None:
     config = CandidateCardConfig(include_source_id=True)
     card = build_candidate_card(_eligible_row(), salt="private-salt", config=config)
     assert card["identity"]["source_id"] == 123456789
+
+
+def test_numpy_dataframe_scalars_are_json_serializable() -> None:
+    row = _eligible_row()
+    row["source_id"] = np.int64(123456789)
+    row["solution_id"] = np.int64(42)
+    row["triage_rank"] = np.int64(5)
+    row["minimum_covariance_regularized"] = np.bool_(True)
+    card = build_candidate_card(row, salt="private-salt")
+    payload = json.dumps(card, allow_nan=False)
+    assert "123456789" not in payload
+    assert card["mass_inference"]["covariance_regularized"] is True
+
+
+def test_missing_identifier_is_ineligible() -> None:
+    row = _eligible_row()
+    row["source_id"] = None
+    eligible, reasons = candidate_card_eligibility(row)
+    assert eligible is False
+    assert "source_or_solution_identifier_missing" in reasons
 
 
 def test_blocked_row_is_ineligible() -> None:
