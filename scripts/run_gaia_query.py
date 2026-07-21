@@ -31,7 +31,14 @@ def parse_args() -> argparse.Namespace:
         help="TAP execution mode; async is safer for joined or ordered Gaia queries",
     )
     parser.add_argument("--maxrec", type=int)
-    parser.add_argument("--execution-duration-seconds", type=float, default=3600.0)
+    parser.add_argument(
+        "--execution-duration-seconds",
+        type=float,
+        help=(
+            "optional remote UWS execution-duration request; omitted by default because "
+            "some anonymous TAP services reject this property"
+        ),
+    )
     parser.add_argument("--wait-timeout-seconds", type=float, default=3600.0)
     parser.add_argument("--fetch-retries", type=int, default=3)
     parser.add_argument(
