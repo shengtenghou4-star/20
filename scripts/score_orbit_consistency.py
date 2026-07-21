@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare fixed Gaia SB1 orbit shapes with clean DESI epoch radial velocities."""
+"""Compare fixed Gaia SB1 orbit shapes with independent DESI RV visits."""
 
 from __future__ import annotations
 
@@ -27,16 +27,28 @@ def read_table(path: Path) -> pd.DataFrame:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("gaia", type=Path, help="Gaia SB1 seed table")
-    parser.add_argument("epochs", type=Path, help="Extracted DESI epoch table")
+    parser.add_argument("epochs", type=Path, help="Extracted DESI exposure table")
     parser.add_argument(
         "--output",
         type=Path,
         default=Path("outputs/orbit_consistency.csv"),
     )
-    parser.add_argument("--min-clean-epochs", type=int, default=2)
+    parser.add_argument(
+        "--min-clean-epochs",
+        type=int,
+        default=2,
+        help="minimum independent visits; legacy option name retained for compatibility",
+    )
     parser.add_argument("--min-arm-sn", type=float, default=2.0)
     parser.add_argument("--max-vrad-err", type=float, default=20.0)
     parser.add_argument("--jitter-kms", type=float, default=0.0)
+    parser.add_argument("--maximum-visit-gap-hours", type=float, default=2.0)
+    parser.add_argument("--visit-error-floor-kms", type=float, default=0.0)
+    parser.add_argument(
+        "--disable-visit-aggregation",
+        action="store_true",
+        help="treat each clean exposure as independent for sensitivity analysis only",
+    )
     parser.add_argument(
         "--include-backup",
         action="store_true",
@@ -58,6 +70,9 @@ def main() -> None:
         max_vrad_err=args.max_vrad_err,
         jitter_kms=args.jitter_kms,
         exclude_programs=excluded,
+        aggregate_visits=not args.disable_visit_aggregation,
+        maximum_visit_gap_hours=args.maximum_visit_gap_hours,
+        visit_error_floor_kms=args.visit_error_floor_kms,
     )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -65,9 +80,13 @@ def main() -> None:
     status_counts = {
         str(key): int(value) for key, value in result["status"].value_counts().items()
     }
-    clean_epoch_counts = {
+    visit_counts = {
         str(key): int(value)
-        for key, value in result["n_clean_epochs"].value_counts().sort_index().items()
+        for key, value in result["n_independent_visits"].value_counts().sort_index().items()
+    }
+    exposure_counts = {
+        str(key): int(value)
+        for key, value in result["n_clean_exposures"].value_counts().sort_index().items()
     }
     manifest = {
         "gaia_input": str(args.gaia),
@@ -80,16 +99,21 @@ def main() -> None:
         "epoch_rows": len(epochs),
         "output_rows": len(result),
         "status_counts": status_counts,
-        "clean_epoch_count_distribution": clean_epoch_counts,
+        "independent_visit_count_distribution": visit_counts,
+        "clean_exposure_count_distribution": exposure_counts,
         "settings": {
-            "min_clean_epochs": args.min_clean_epochs,
+            "minimum_independent_visits": args.min_clean_epochs,
             "min_arm_sn": args.min_arm_sn,
             "max_vrad_err": args.max_vrad_err,
             "jitter_kms": args.jitter_kms,
             "include_backup": args.include_backup,
+            "visit_aggregation_enabled": not args.disable_visit_aggregation,
+            "maximum_visit_gap_hours": args.maximum_visit_gap_hours,
+            "visit_error_floor_kms": args.visit_error_floor_kms,
         },
         "interpretation_boundary": (
-            "Orbit-consistency scores are not compact-object classifications."
+            "Orbit-consistency scores are not compact-object classifications. Closely "
+            "spaced exposures are aggregated by default to prevent pseudo-replication."
         ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
