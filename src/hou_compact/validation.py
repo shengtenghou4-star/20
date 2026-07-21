@@ -1,8 +1,10 @@
-"""Independent Gaia-orbit versus DESI-epoch validation summaries.
+"""Independent Gaia-orbit versus DESI-visit validation summaries.
 
 The functions in this module compare a fixed Gaia SB1 velocity curve with clean DESI
-single-epoch radial velocities. Only one additive cross-survey velocity zero point is
-fitted. No compact-object label or mass classification is produced here.
+radial velocities. Closely spaced exposures are aggregated into independent visits by
+default so repeated spectra from one observing block cannot masquerade as independent
+orbital-phase evidence. Only one additive cross-survey velocity zero point is fitted.
+No compact-object label or mass classification is produced here.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from hou_compact.orbits import (
     gaia_sb1_velocity_shape,
 )
 from hou_compact.physics import rv_pairwise_significance, rv_variability_chi2
+from hou_compact.visits import aggregate_independent_visits
 
 _REQUIRED_GAIA_COLUMNS = {
     "solution_id",
@@ -85,16 +88,23 @@ def score_orbit_consistency(
     max_vrad_err: float = 20.0,
     jitter_kms: float = 0.0,
     exclude_programs: tuple[str, ...] = ("backup",),
+    aggregate_visits: bool = True,
+    maximum_visit_gap_hours: float = 2.0,
+    visit_error_floor_kms: float = 0.0,
 ) -> pd.DataFrame:
-    """Score each Gaia orbital solution against independent DESI epoch velocities.
+    """Score each Gaia orbital solution against independent DESI RV visits.
 
     Positive ``delta_chi2_constant_minus_orbit`` means the fixed Gaia orbit shape fits
     better than a constant-velocity model. Both models have one fitted additive velocity
     parameter, so the comparison does not reward the orbit model with extra free shape
-    parameters. Rows with insufficient or invalid data are retained with a status code.
+    parameters. By default, nearby exposures are combined into independent visits and
+    ``min_clean_epochs`` is applied to the number of visits, retained under its legacy
+    name for command-line compatibility.
     """
     if min_clean_epochs < 2:
         raise ValueError("min_clean_epochs must be at least 2")
+    if not isinstance(aggregate_visits, bool):
+        raise TypeError("aggregate_visits must be boolean")
     _require_columns(gaia_rows, _REQUIRED_GAIA_COLUMNS, "gaia_rows")
     _require_columns(epoch_rows, _REQUIRED_EPOCH_COLUMNS, "epoch_rows")
 
@@ -113,24 +123,60 @@ def score_orbit_consistency(
     for _, gaia in gaia_rows.iterrows():
         source_id = int(gaia["source_id"])
         source_epochs = grouped.get(source_id, epochs.iloc[0:0])
-        clean = source_epochs.loc[source_epochs["clean_epoch"]].sort_values(
+        clean_exposures = source_epochs.loc[source_epochs["clean_epoch"]].sort_values(
             ["mjd"], kind="stable"
         )
         excluded_backup = 0
         if "program" in source_epochs.columns:
             excluded_backup = int(source_epochs["program"].isin(exclude_programs).sum())
 
+        if aggregate_visits and not clean_exposures.empty:
+            analysis_rows = aggregate_independent_visits(
+                clean_exposures,
+                maximum_gap_hours=maximum_visit_gap_hours,
+                error_floor_kms=visit_error_floor_kms,
+            )
+        else:
+            analysis_rows = clean_exposures.copy()
+            if not analysis_rows.empty:
+                analysis_rows["n_exposures"] = 1
+                analysis_rows["visit_span_hours"] = 0.0
+                analysis_rows["error_inflation_factor"] = 1.0
+
+        n_visits = int(len(analysis_rows))
+        maximum_exposures_per_visit = (
+            int(analysis_rows["n_exposures"].max()) if not analysis_rows.empty else 0
+        )
+        maximum_visit_span_hours = (
+            float(analysis_rows["visit_span_hours"].max())
+            if not analysis_rows.empty
+            else 0.0
+        )
+        maximum_visit_error_inflation = (
+            float(analysis_rows["error_inflation_factor"].max())
+            if not analysis_rows.empty
+            else 1.0
+        )
+
         record: dict[str, object] = {
             "solution_id": gaia["solution_id"],
             "source_id": source_id,
             "nss_solution_type": gaia["nss_solution_type"],
             "n_raw_epochs": int(len(source_epochs)),
-            "n_clean_epochs": int(len(clean)),
+            "n_clean_exposures": int(len(clean_exposures)),
+            "n_independent_visits": n_visits,
+            "n_clean_epochs": n_visits,
             "n_excluded_backup_epochs": excluded_backup,
+            "visit_aggregation_enabled": aggregate_visits,
+            "maximum_visit_gap_hours": maximum_visit_gap_hours,
+            "visit_error_floor_kms": visit_error_floor_kms,
+            "maximum_exposures_per_visit": maximum_exposures_per_visit,
+            "maximum_visit_span_hours": maximum_visit_span_hours,
+            "maximum_visit_error_inflation": maximum_visit_error_inflation,
             "status": "insufficient_clean_epochs",
             "error": "",
         }
-        if len(clean) < min_clean_epochs:
+        if n_visits < min_clean_epochs:
             records.append(record)
             continue
 
@@ -142,9 +188,9 @@ def score_orbit_consistency(
             eccentricity = _optional_float(gaia["eccentricity"])
             arg_periastron = _optional_float(gaia["arg_periastron"])
 
-            mjd = clean["mjd"].to_numpy(dtype=float)
-            velocity = clean["vrad"].to_numpy(dtype=float)
-            error = clean["vrad_err"].to_numpy(dtype=float)
+            mjd = analysis_rows["mjd"].to_numpy(dtype=float)
+            velocity = analysis_rows["vrad"].to_numpy(dtype=float)
+            error = analysis_rows["vrad_err"].to_numpy(dtype=float)
             effective_error = np.sqrt(error**2 + jitter_kms**2)
             shape = gaia_sb1_velocity_shape(
                 mjd,
