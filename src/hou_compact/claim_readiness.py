@@ -71,7 +71,10 @@ def _text(row: Mapping[str, object], key: str) -> str:
     value = row.get(key)
     if value is None:
         return ""
-    return str(value).strip()
+    text = str(value).strip()
+    if text.casefold() in {"nan", "nat", "<na>", "none"}:
+        return ""
+    return text
 
 
 def assess_claim_readiness(
