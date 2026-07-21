@@ -60,7 +60,12 @@ class DesiEpochFile:
     run: str = DESI_SINGLE_EPOCH_RUN
 
     def __post_init__(self) -> None:
-        for name, value in (("survey", self.survey), ("program", self.program), ("run", self.run)):
+        named_values = (
+            ("survey", self.survey),
+            ("program", self.program),
+            ("run", self.run),
+        )
+        for name, value in named_values:
             if not value or "/" in value or ".." in value:
                 raise ValueError(f"unsafe or empty {name}: {value!r}")
         if self.healpix < 0:
