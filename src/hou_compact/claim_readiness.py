@@ -43,8 +43,14 @@ class ClaimReadinessConfig:
         if self.minimum_triage_rank < 0:
             raise ValueError("minimum_triage_rank must be non-negative")
         for name, values in (
-            ("accepted_no_secondary_spectral_statuses", self.accepted_no_secondary_spectral_statuses),
-            ("accepted_no_secondary_sed_statuses", self.accepted_no_secondary_sed_statuses),
+            (
+                "accepted_no_secondary_spectral_statuses",
+                self.accepted_no_secondary_spectral_statuses,
+            ),
+            (
+                "accepted_no_secondary_sed_statuses",
+                self.accepted_no_secondary_sed_statuses,
+            ),
             ("accepted_hierarchy_statuses", self.accepted_hierarchy_statuses),
             ("accepted_stripped_star_statuses", self.accepted_stripped_star_statuses),
             ("accepted_novelty_statuses", self.accepted_novelty_statuses),
@@ -118,7 +124,9 @@ def assess_claim_readiness(
         }:
             blockers.append("gaia_contamination_signals_unresolved")
         else:
-            cautions.append("gaia_contamination_signals_resolved_with_documented_followup")
+            cautions.append(
+                "gaia_contamination_signals_resolved_with_documented_followup"
+            )
     elif contamination_status == "no_signal_in_available_fields_but_incomplete":
         blockers.append("gaia_contamination_audit_incomplete")
     elif contamination_status != "no_gaia_side_signal_detected":
@@ -193,7 +201,9 @@ def assess_claim_readiness(
     else:
         passed.append("catalogue_and_literature_novelty")
         if novelty_status == "known_binary_without_compact_object_claim":
-            cautions.append("known_binary_record_requires_citation_and_reconciliation")
+            cautions.append(
+                "known_binary_record_requires_citation_and_reconciliation"
+            )
 
     if blockers:
         return {
