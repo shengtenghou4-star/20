@@ -86,6 +86,7 @@ def _draw_physical_orbital_samples(
 def draw_gaia_correlated_mass_posterior(
     *,
     solution_type: str,
+    bit_index: object,
     corr_vec: object,
     period_days: float,
     period_error_days: float,
@@ -102,12 +103,13 @@ def draw_gaia_correlated_mass_posterior(
     minimum_inclination_deg: float = 0.0,
     random_seed: int = 0,
 ) -> CorrelatedMassPosterior:
-    """Draw a Gaia-correlation-aware SB1 or SB1C mass posterior."""
+    """Draw a bit-index-validated, correlation-aware SB1 or SB1C mass posterior."""
     if not isinstance(random_seed, int) or random_seed < 0:
         raise ValueError("random_seed must be a non-negative integer")
     solution = solution_type.strip()
     covariance_product = sb1_mass_parameter_covariance(
         solution_type=solution,
+        bit_index=bit_index,
         corr_vec=corr_vec,
         period_error=period_error_days,
         k1_error=k1_error_kms,
@@ -183,6 +185,7 @@ def draw_gaia_correlated_mass_posterior(
 def draw_standard_gaia_correlated_products(
     *,
     solution_type: str,
+    bit_index: object,
     corr_vec: object,
     period_days: float,
     period_error_days: float,
@@ -196,9 +199,10 @@ def draw_standard_gaia_correlated_products(
     minimum_isotropic_inclination_deg: float = 0.0,
     random_seed: int = 0,
 ) -> dict[str, dict[str, object]]:
-    """Return edge-on and isotropic products using Gaia's correlation vector."""
+    """Return edge-on and isotropic products using Gaia's validated sparse covariance."""
     common = {
         "solution_type": solution_type,
+        "bit_index": bit_index,
         "corr_vec": corr_vec,
         "period_days": period_days,
         "period_error_days": period_error_days,
@@ -223,14 +227,17 @@ def draw_standard_gaia_correlated_products(
     )
 
     def package(result: CorrelatedMassPosterior, interpretation: str) -> dict[str, object]:
+        covariance = result.orbital_covariance
         return {
             **summarize_mass_posterior(result.samples),
-            "orbital_parameter_names": list(
-                result.orbital_covariance.parameter_names
-            ),
-            "orbital_covariance": result.orbital_covariance.covariance.tolist(),
-            "orbital_correlation": result.orbital_covariance.correlation.tolist(),
-            "covariance_regularized": result.orbital_covariance.regularized,
+            "orbital_parameter_names": list(covariance.parameter_names),
+            "orbital_covariance": covariance.covariance.tolist(),
+            "orbital_correlation": covariance.correlation.tolist(),
+            "covariance_regularized": covariance.regularized,
+            "bit_index": covariance.bit_index,
+            "corr_vec_decoding_mode": covariance.decoding_mode,
+            "corr_vec_raw_length": covariance.raw_vector_length,
+            "corr_vec_coefficient_count": covariance.coefficient_count,
             "physical_draw_acceptance_fraction": result.acceptance_fraction,
             "interpretation": interpretation,
         }
@@ -238,12 +245,12 @@ def draw_standard_gaia_correlated_products(
     return {
         "minimum_mass": package(
             edge_on,
-            "edge-on minimum-mass distribution using Gaia corr_vec",
+            "edge-on minimum-mass distribution using bit-index-validated Gaia corr_vec",
         ),
         "isotropic_sensitivity": {
             **package(
                 isotropic,
-                "geometry-only isotropic sensitivity using Gaia corr_vec; not selection-corrected",
+                "geometry-only isotropic sensitivity using bit-index-validated Gaia corr_vec; not selection-corrected",
             ),
             "minimum_inclination_deg": minimum_isotropic_inclination_deg,
         },
