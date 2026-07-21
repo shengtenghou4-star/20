@@ -78,8 +78,11 @@ def audit_novelty_records(
 ) -> dict[str, object]:
     """Reduce crossmatch/literature records to a conservative novelty status."""
 
-    searched = {str(service).strip().casefold() for service in searched_services if str(service).strip()}
-    required = {service.casefold() for service in config.required_services}
+    searched = {
+        str(service).strip().casefold()
+        for service in searched_services
+        if service is not None and str(service).strip()
+    }
     missing_services = sorted(
         service
         for service in config.required_services
@@ -90,7 +93,10 @@ def audit_novelty_records(
     rejected_large_separation = 0
     for record in records:
         separation = _optional_float(record, "separation_arcsec")
-        if separation is not None and separation > config.maximum_match_separation_arcsec:
+        if (
+            separation is not None
+            and separation > config.maximum_match_separation_arcsec
+        ):
             rejected_large_separation += 1
             continue
         accepted.append(dict(record))
