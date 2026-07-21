@@ -50,6 +50,8 @@ def solve_kepler(
     if not np.all(np.isfinite(mean)):
         raise ValueError("mean anomaly values must be finite")
     wrapped = (mean + math.pi) % _TWO_PI - math.pi
+    positive_pi_boundary = np.isclose(wrapped, -math.pi, atol=1e-15) & (mean > 0)
+    wrapped = np.where(positive_pi_boundary, math.pi, wrapped)
     low = np.full_like(wrapped, -math.pi, dtype=float)
     high = np.full_like(wrapped, math.pi, dtype=float)
 
