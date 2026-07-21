@@ -6,8 +6,10 @@ import math
 import re
 import time
 from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import astropy.units as u
@@ -17,9 +19,12 @@ from astropy.coordinates import SkyCoord
 from astropy.io import fits
 from astropy.time import Time
 
-DESI_IRON_BASE_URL = (
-    "https://data.desi.lbl.gov/public/dr1/vac/dr1/mws/iron/v1.0/"
-    "rv_output/240521/healpix"
+DESI_MWS_BASE_URL = "https://data.desi.lbl.gov/public/dr1/vac/dr1/mws/iron/v1.0"
+DESI_SINGLE_EPOCH_RUN = "240521"
+DEFAULT_SURVEY_PROGRAMS = (
+    ("main", "dark"),
+    ("main", "bright"),
+    ("main", "backup"),
 )
 _NESTED_SOURCE_ID_SHIFT = 59 - 12
 _DIRECT_DR3_SOURCE_COLUMNS = (
@@ -29,13 +34,62 @@ _DIRECT_DR3_SOURCE_COLUMNS = (
 )
 
 
-def source_id_to_healpix(source_id: int) -> int:
-    """Decode Gaia's nested level-12 HEALPix index from a DR3 source ID."""
-    if not isinstance(source_id, (int, np.integer)):
-        raise TypeError("source_id must be an integer")
-    if source_id < 0:
-        raise ValueError("source_id must be non-negative")
-    return int(source_id) // (1 << _NESTED_SOURCE_ID_SHIFT)
+def gaia_source_id_to_healpix(source_id: int, *, level: int = 12) -> int:
+    """Decode Gaia's nested HEALPix index from the source ID."""
+    if not isinstance(source_id, int) or source_id < 0:
+        raise ValueError("source_id must be a non-negative integer")
+    if not isinstance(level, int) or not 0 <= level <= 12:
+        raise ValueError("level must be an integer in [0, 12]")
+    level12 = source_id // (1 << 35)
+    return level12 // (4 ** (12 - level))
+
+
+# Compatibility alias used by the bounded downloader command.
+source_id_to_healpix = gaia_source_id_to_healpix
+
+
+def desi_healpix_parent(healpix_level6: int) -> int:
+    """Return the two-digit parent directory used by DESI's MWS products."""
+    if not isinstance(healpix_level6, int) or healpix_level6 < 0:
+        raise ValueError("healpix_level6 must be a non-negative integer")
+    return healpix_level6 // 100
+
+
+@dataclass(frozen=True)
+class DesiEpochFile:
+    """One candidate DESI per-HEALPix single-epoch RV file."""
+
+    healpix: int
+    parent: int
+    survey: str
+    program: str
+    url: str
+
+    def as_record(self) -> dict[str, object]:
+        return asdict(self)
+
+
+def single_epoch_file_url(
+    healpix_level6: int,
+    *,
+    survey: str,
+    program: str,
+    run: str = DESI_SINGLE_EPOCH_RUN,
+    base_url: str = DESI_MWS_BASE_URL,
+) -> str:
+    """Construct one DESI DR1 MWS single-exposure RV file URL."""
+    if not run or "/" in run:
+        raise ValueError("run must be a simple path component")
+    if not survey or "/" in survey:
+        raise ValueError("survey must be a simple path component")
+    if not program or "/" in program:
+        raise ValueError("program must be a simple path component")
+    parent = desi_healpix_parent(healpix_level6)
+    filename = f"rvtab_spectra-{survey}-{program}-{healpix_level6}.fits"
+    return (
+        f"{base_url.rstrip('/')}/rv_output/{run}/healpix/{survey}/{program}/"
+        f"{parent}/{healpix_level6}/{filename}"
+    )
 
 
 def desi_single_epoch_url(
@@ -43,49 +97,68 @@ def desi_single_epoch_url(
     *,
     survey: str = "main",
     program: str = "bright",
-    base_url: str = DESI_IRON_BASE_URL,
+    base_url: str = DESI_MWS_BASE_URL,
 ) -> str:
-    """Return the DR1 MWS per-HEALPix single-exposure RVSpecFit URL."""
-    if not isinstance(healpix, (int, np.integer)) or healpix < 0:
-        raise ValueError("healpix must be a non-negative integer")
-    if not survey or "/" in survey:
-        raise ValueError("survey must be a simple non-empty path component")
-    if not program or "/" in program:
-        raise ValueError("program must be a simple non-empty path component")
-    group = int(healpix) // 100
-    filename = f"rvtab_spectra-{survey}-{program}-{int(healpix)}.fits"
-    return f"{base_url.rstrip('/')}/{survey}/{program}/{group}/{int(healpix)}/{filename}"
+    """Compatibility wrapper for the DR1 MWS per-HEALPix URL."""
+    return single_epoch_file_url(
+        int(healpix),
+        survey=survey,
+        program=program,
+        base_url=base_url,
+    )
 
 
 def plan_single_epoch_files(
     source_ids: Iterable[int],
     *,
-    surveys: tuple[str, ...] = ("main",),
-    programs: tuple[str, ...] = ("bright", "dark", "backup"),
-    base_url: str = DESI_IRON_BASE_URL,
-) -> pd.DataFrame:
-    """Plan unique DESI single-exposure files needed for Gaia source IDs."""
-    source_ids = [int(value) for value in source_ids]
-    healpix_values = sorted({source_id_to_healpix(value) for value in source_ids})
-    rows: list[dict[str, object]] = []
-    for healpix in healpix_values:
-        for survey in surveys:
-            for program in programs:
-                rows.append(
-                    {
-                        "healpix": healpix,
-                        "healpix_group": healpix // 100,
-                        "survey": survey,
-                        "program": program,
-                        "url": desi_single_epoch_url(
-                            healpix,
-                            survey=survey,
-                            program=program,
-                            base_url=base_url,
-                        ),
-                    }
-                )
-    return pd.DataFrame(rows)
+    survey_programs: Iterable[tuple[str, str]] = DEFAULT_SURVEY_PROGRAMS,
+    run: str = DESI_SINGLE_EPOCH_RUN,
+    base_url: str = DESI_MWS_BASE_URL,
+) -> list[DesiEpochFile]:
+    """Return deterministic unique DESI files covering the Gaia source IDs."""
+    healpix_values = sorted({gaia_source_id_to_healpix(int(value), level=6) for value in source_ids})
+    combinations = tuple(survey_programs)
+    if not combinations:
+        raise ValueError("survey_programs must not be empty")
+    files = [
+        DesiEpochFile(
+            healpix=healpix,
+            parent=desi_healpix_parent(healpix),
+            survey=survey,
+            program=program,
+            url=single_epoch_file_url(
+                healpix,
+                survey=survey,
+                program=program,
+                run=run,
+                base_url=base_url,
+            ),
+        )
+        for healpix in healpix_values
+        for survey, program in combinations
+    ]
+    return files
+
+
+def write_file_plan(files: Iterable[DesiEpochFile], path: Path) -> Path:
+    """Write a deterministic CSV file plan."""
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [item.as_record() for item in files]
+    pd.DataFrame.from_records(
+        records,
+        columns=["healpix", "parent", "survey", "program", "url"],
+    ).to_csv(path, index=False)
+    return path
+
+
+def local_path_for_url(url: str, cache_dir: Path) -> Path:
+    """Map a DESI URL to a collision-resistant local cache path."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("url must be an absolute HTTP(S) URL")
+    relative = Path(parsed.netloc) / parsed.path.lstrip("/")
+    return cache_dir.resolve() / relative
 
 
 def file_size_from_headers(url: str, *, timeout: int = 30) -> int | None:
@@ -268,8 +341,7 @@ def _position_match_dr3_sources(
     else:
         target_epoch = np.full(len(fibermap), np.nan)
     if "MJD" in fibermap.names:
-        mjd = np.asarray(fibermap["MJD"], dtype=float)
-        fallback_epoch = Time(mjd, format="mjd").jyear
+        fallback_epoch = Time(np.asarray(fibermap["MJD"], dtype=float), format="mjd").jyear
     else:
         fallback_epoch = np.full(len(fibermap), 2016.0)
     target_epoch = np.where(
@@ -315,6 +387,32 @@ def _position_match_dr3_sources(
     return source_ids, nearest, matched
 
 
+def _empty_epoch_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "source_id",
+            "targetid",
+            "expid",
+            "mjd",
+            "vrad",
+            "vrad_err",
+            "success",
+            "rvs_warn",
+            "fiberstatus",
+            "sn_b",
+            "sn_r",
+            "sn_z",
+            "survey",
+            "program",
+            "healpix",
+            "source_match_mode",
+            "source_match_separation_arcsec",
+            "desi_ref_id",
+            "desi_ref_cat",
+        ]
+    )
+
+
 def extract_single_epoch_rows(
     path: Path,
     selected_sources: Iterable[int] | pd.DataFrame | Mapping[str, object],
@@ -327,12 +425,11 @@ def extract_single_epoch_rows(
 ) -> pd.DataFrame:
     """Extract row-aligned DESI RV epochs for selected Gaia DR3 sources.
 
-    Combined DESI products may contain a row-aligned ``GAIA`` HDU, while the small
-    per-HEALPix ``rvtab_spectra`` files used by the bounded downloader commonly contain only
-    ``RVTAB``, ``FIBERMAP`` and ``SCORES``. Direct DR3 IDs are used when available. Otherwise
-    Gaia DR3 coordinates and proper motions are propagated to the DESI reference epoch and
-    matched to ``FIBERMAP.TARGET_RA/TARGET_DEC``. ``REF_ID`` is retained as DESI provenance
-    but is never silently interpreted as a DR3 source ID because it may refer to Gaia DR2.
+    Small per-HEALPix ``rvtab_spectra`` files often contain only RVTAB, FIBERMAP,
+    and SCORES. Direct DR3 IDs are preferred when present. Otherwise Gaia DR3 positions
+    and proper motions are propagated to the FIBERMAP reference epoch and matched with
+    explicit separation and ambiguity gates. REF_ID is provenance only because it may be
+    a Gaia DR2 identifier.
     """
     path = path.resolve()
     source_frame = _source_catalog_frame(selected_sources)
@@ -375,29 +472,7 @@ def extract_single_epoch_rows(
 
         file_healpix = _infer_healpix(path, rvtab, healpix)
         if not np.any(mask):
-            return pd.DataFrame(
-                columns=[
-                    "source_id",
-                    "targetid",
-                    "expid",
-                    "mjd",
-                    "vrad",
-                    "vrad_err",
-                    "success",
-                    "rvs_warn",
-                    "fiberstatus",
-                    "sn_b",
-                    "sn_r",
-                    "sn_z",
-                    "survey",
-                    "program",
-                    "healpix",
-                    "source_match_mode",
-                    "source_match_separation_arcsec",
-                    "desi_ref_id",
-                    "desi_ref_cat",
-                ]
-            )
+            return _empty_epoch_frame()
 
         def column_or_default(table: object, name: str, default: object) -> np.ndarray:
             if name in table.names:
