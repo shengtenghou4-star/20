@@ -151,7 +151,12 @@ def run_sync_query(
         raise ValueError("maxrec must be positive when provided")
     try:
         service = pyvo.dal.TAPService(tap_url)
-        result = service.run_sync(query, maxrec=maxrec)
+        if maxrec is None:
+            # ``search`` is the long-standing alias and is retained for clients/mocks that
+            # predate the explicit ``run_sync`` method.
+            result = service.search(query)
+        else:
+            result = service.run_sync(query, maxrec=maxrec)
         table = result.to_table()
     except Exception as error:
         write_failure_manifest(
