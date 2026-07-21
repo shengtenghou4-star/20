@@ -61,6 +61,18 @@ def test_missing_fields_do_not_create_false_clean_status() -> None:
     assert result["gaia_contamination_missing_fields"]
 
 
+def test_not_available_variability_is_incomplete_not_clean() -> None:
+    row = _clean_row()
+    row["phot_variable_flag"] = "NOT_AVAILABLE"
+    result = audit_gaia_contamination(row)
+    assert result["gaia_contamination_status"] == (
+        "no_signal_in_available_fields_but_incomplete"
+    )
+    assert "phot_variable_flag_not_available" in result[
+        "gaia_contamination_missing_fields"
+    ]
+
+
 def test_deblended_rv_fraction_is_computed() -> None:
     row = _clean_row()
     row["rv_nb_deblended_transits"] = 5
