@@ -1,0 +1,45 @@
+name: Report latest public Gaia run
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/report-public-latest.yml"
+      - "results/public/LATEST.json"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Post candidate-safe aggregate to issue 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PY' > /tmp/comment.md
+          import json
+          from pathlib import Path
+
+          data = json.loads(Path('results/public/LATEST.json').read_text(encoding='utf-8'))
+          print('## Latest candidate-safe public run')
+          print()
+          print(f"- Run ID: `{data.get('latest_run_id')}`")
+          print(f"- Query version: `{data.get('query_version')}`")
+          print(f"- Gaia status: `{data.get('gaia_status')}`")
+          print(f"- Gaia row count: **{data.get('gaia_row_count')}**")
+          print(f"- Step outcomes: `{json.dumps(data.get('step_outcomes'), sort_keys=True)}`")
+          print(f"- Covariance reference: `{json.dumps(data.get('covariance_reference'), sort_keys=True)}`")
+          print(f"- Primary mass aggregate: `{json.dumps(data.get('primary_mass'), sort_keys=True)}`")
+          print(f"- Correlated masses aggregate: `{json.dumps(data.get('correlated_masses'), sort_keys=True)}`")
+          print(f"- Contamination aggregate: `{json.dumps(data.get('contamination_audit'), sort_keys=True)}`")
+          print(f"- DESI file plan: `{json.dumps(data.get('desi_file_plan'), sort_keys=True)}`")
+          print(f"- DESI probe: `{json.dumps(data.get('desi_probe'), sort_keys=True)}`")
+          print()
+          print('No source identifiers or candidate rows are included in this comment.')
+          PY
+          gh issue comment 2 --repo "$GITHUB_REPOSITORY" --body-file /tmp/comment.md
