@@ -14,9 +14,12 @@ on:
       - "src/hou_compact/validation.py"
       - "src/hou_compact/primary.py"
       - "src/hou_compact/masses.py"
+      - "src/hou_compact/gaia_covariance.py"
+      - "src/hou_compact/correlated_masses.py"
+      - "src/hou_compact/triage.py"
       - "scripts/run_gaia_query.py"
       - "scripts/prepare_primary_mass_priors.py"
-      - "scripts/infer_mass_posteriors.py"
+      - "scripts/infer_mass_posteriors_correlated.py"
       - "scripts/plan_desi_files.py"
       - "scripts/probe_desi_files.py"
       - "tests/**"
@@ -50,12 +53,12 @@ jobs:
             --output outputs/primary_mass_priors.csv \
             --max-rows 250 \
             --n-draws 5000
-      - name: Build minimum-mass and isotropic-sensitivity products
+      - name: Build Gaia-correlation-aware mass products
         run: |
-          python scripts/infer_mass_posteriors.py \
+          python scripts/infer_mass_posteriors_correlated.py \
             outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
             --primary-masses outputs/primary_mass_priors.csv \
-            --output outputs/mass_posteriors.csv \
+            --output outputs/mass_posteriors_correlated.csv \
             --max-rows 100 \
             --n-draws 10000
       - name: Plan DESI single-epoch files
@@ -92,8 +95,8 @@ jobs:
             outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv.manifest.json
             outputs/primary_mass_priors.csv
             outputs/primary_mass_priors.csv.manifest.json
-            outputs/mass_posteriors.csv
-            outputs/mass_posteriors.csv.manifest.json
+            outputs/mass_posteriors_correlated.csv
+            outputs/mass_posteriors_correlated.csv.manifest.json
             outputs/desi_single_epoch_plan.csv
             outputs/desi_single_epoch_plan.csv.manifest.json
             outputs/desi_probe.csv
