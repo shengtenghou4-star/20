@@ -14,7 +14,11 @@ import numpy as np
 import pandas as pd
 
 from hou_compact.desi import clean_epoch_mask
-from hou_compact.orbits import fit_systemic_velocity, gaia_sb1_velocity_shape
+from hou_compact.orbits import (
+    fit_systemic_velocity,
+    gaia_periastron_mjd,
+    gaia_sb1_velocity_shape,
+)
 from hou_compact.physics import rv_pairwise_significance, rv_variability_chi2
 
 _REQUIRED_GAIA_COLUMNS = {
@@ -141,6 +145,7 @@ def score_orbit_consistency(
             mjd = clean["mjd"].to_numpy(dtype=float)
             velocity = clean["vrad"].to_numpy(dtype=float)
             error = clean["vrad_err"].to_numpy(dtype=float)
+            effective_error = np.sqrt(error**2 + jitter_kms**2)
             shape = gaia_sb1_velocity_shape(
                 mjd,
                 ref_epoch_jyear=ref_epoch,
@@ -158,14 +163,10 @@ def score_orbit_consistency(
             )
             constant_chi2, constant_dof, constant_mean = rv_variability_chi2(
                 velocity,
-                np.sqrt(error**2 + jitter_kms**2),
+                effective_error,
             )
-            periastron_mjd = float(
-                mjd[0] - np.mod(mjd[0] - mjd[0], period)
-            )
-            # Coverage is origin-invariant; use the Gaia relative epoch convention here.
-            phase_epoch = float(mjd[0] - np.mod(mjd[0], period))
-            coverage = orbital_phase_coverage(mjd, period, phase_epoch)
+            periastron_mjd = gaia_periastron_mjd(ref_epoch, t_periastron)
+            coverage = orbital_phase_coverage(mjd, period, periastron_mjd)
 
             record.update(
                 {
@@ -182,12 +183,12 @@ def score_orbit_consistency(
                     "orbit_reduced_chi2": orbit_fit.reduced_chi2,
                     "delta_chi2_constant_minus_orbit": constant_chi2 - orbit_fit.chi2,
                     "max_pairwise_rv_significance": rv_pairwise_significance(
-                        velocity, np.sqrt(error**2 + jitter_kms**2)
+                        velocity, effective_error
                     ),
                     "rms_orbit_residual_kms": float(
                         np.sqrt(np.mean(orbit_fit.residuals_kms**2))
                     ),
-                    "periastron_epoch_placeholder_mjd": periastron_mjd,
+                    "gaia_periastron_mjd": periastron_mjd,
                 }
             )
             gaia_gamma = _optional_float(gaia.get("center_of_mass_velocity"))
