@@ -22,6 +22,9 @@ dev = [
   "pytest>=8.2",
   "ruff>=0.5",
 ]
+reference = [
+  "nsstools==0.1.12",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
