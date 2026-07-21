@@ -1,4 +1,4 @@
-name: gaia-sb1-wp4-pilot
+name: gaia-sb1-wp5-pilot
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/gaia-pilot.yml"
-      - "queries/gaia_sb1_mass_proxy_pilot_v4.adql"
+      - "queries/gaia_sb1_contamination_pilot_v5.adql"
       - "src/hou_compact/gaia.py"
       - "src/hou_compact/desi.py"
       - "src/hou_compact/physics.py"
@@ -17,9 +17,11 @@ on:
       - "src/hou_compact/gaia_covariance.py"
       - "src/hou_compact/correlated_masses.py"
       - "src/hou_compact/triage.py"
+      - "src/hou_compact/contamination.py"
       - "scripts/run_gaia_query.py"
       - "scripts/prepare_primary_mass_priors.py"
       - "scripts/infer_mass_posteriors_correlated.py"
+      - "scripts/audit_gaia_contamination.py"
       - "scripts/plan_desi_files.py"
       - "scripts/probe_desi_files.py"
       - "tests/**"
@@ -41,30 +43,36 @@ jobs:
         run: python -m pip install -e '.[dev]'
       - name: Run deterministic unit tests before network acquisition
         run: pytest -q
-      - name: Execute frozen Gaia SB1 v4 pilot query
+      - name: Execute frozen Gaia SB1 v5 pilot query
         run: |
           python scripts/run_gaia_query.py \
-            --query queries/gaia_sb1_mass_proxy_pilot_v4.adql \
-            --output outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv
+            --query queries/gaia_sb1_contamination_pilot_v5.adql \
+            --output outputs/gaia_sb1_contamination_pilot_v5.ecsv
       - name: Build preliminary GSP-Phot primary-mass priors
         run: |
           python scripts/prepare_primary_mass_priors.py \
-            outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
             --output outputs/primary_mass_priors.csv \
             --max-rows 250 \
             --n-draws 5000
       - name: Build Gaia-correlation-aware mass products
         run: |
           python scripts/infer_mass_posteriors_correlated.py \
-            outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
             --primary-masses outputs/primary_mass_priors.csv \
             --output outputs/mass_posteriors_correlated.csv \
             --max-rows 100 \
             --n-draws 10000
+      - name: Build Gaia-side WP5 contamination audit
+        run: |
+          python scripts/audit_gaia_contamination.py \
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+            --output outputs/gaia_contamination_audit.csv \
+            --max-rows 5000
       - name: Plan DESI single-epoch files
         run: |
           python scripts/plan_desi_files.py \
-            outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
             --output outputs/desi_single_epoch_plan.csv
       - name: Probe DESI overlap without bulk download
         run: |
@@ -89,14 +97,16 @@ jobs:
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: gaia-sb1-wp4-pilot
+          name: gaia-sb1-wp5-pilot
           path: |
-            outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv
-            outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv.manifest.json
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json
             outputs/primary_mass_priors.csv
             outputs/primary_mass_priors.csv.manifest.json
             outputs/mass_posteriors_correlated.csv
             outputs/mass_posteriors_correlated.csv.manifest.json
+            outputs/gaia_contamination_audit.csv
+            outputs/gaia_contamination_audit.csv.manifest.json
             outputs/desi_single_epoch_plan.csv
             outputs/desi_single_epoch_plan.csv.manifest.json
             outputs/desi_probe.csv
