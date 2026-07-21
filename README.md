@@ -60,8 +60,8 @@ Project initialized on **2026-07-21**.
 
 - [x] Scientific target and falsifiable hypotheses fixed
 - [x] Repository and provenance policy initialized
-- [x] Gaia v4 query restricted to pure `SB1` and `SB1C`
-- [x] Gaia covariance vector, period confidence, flags, and RV-transit counts preserved
+- [x] Gaia v5 query restricted to pure `SB1` and `SB1C`
+- [x] Gaia covariance vector, period confidence, flags, RV-transit counts, and blend diagnostics preserved
 - [x] Gaia `corr_vec` decoded into the period/K1/eccentricity covariance block
 - [x] Correlation-aware physical Monte Carlo implemented with explicit covariance repair audit
 - [x] GSP-Phot gravity/radius inputs preserved for a triage-only M1 proxy
@@ -71,34 +71,41 @@ Project initialized on **2026-07-21**.
 - [x] Fixed-Gaia-orbit versus constant-RV validation code implemented
 - [x] Edge-on minimum-mass Monte Carlo implemented
 - [x] Isotropic-inclination sensitivity product implemented and explicitly labelled
+- [x] Gaia-side WP5 blend, structure, contamination, and variability audit implemented
 - [x] Transparent follow-up gates implemented without compact-object labels
-- [x] Unit tests added for physics, covariance, HEALPix, FITS alignment, orbits, mass inference, and triage
-- [x] GitHub Actions configured to run tests, Gaia v4 acquisition, correlated WP4 products, and DESI overlap probing
-- [ ] Correlation-aware implementation passes pull-request CI
-- [ ] Gaia v4 seed query successfully returned from the live archive
+- [x] Pseudonymized private candidate-card generator implemented; generated cards remain outside Git
+- [x] CI failure diagnostics are preserved as downloadable artifacts
+- [x] Unit tests added for physics, covariance, HEALPix, FITS alignment, orbits, mass inference, contamination, triage, and card privacy
+- [x] GitHub Actions configured to run tests, Gaia v5 acquisition, correlated WP4 products, WP5 audit, and DESI overlap probing
+- [ ] Latest WP5 implementation passes pull-request CI
+- [ ] Gaia v5 seed query successfully returned from the live archive
 - [ ] DESI overlap quantified from returned Gaia source IDs
 - [ ] First real multi-epoch orbit-consistency score produced
 - [ ] Live `corr_vec` serialization and covariance products validated against returned Gaia rows
-- [ ] Luminous-secondary, hierarchy, stripped-star, and novelty audits completed
+- [ ] Spectral, SED, hierarchy, stripped-star, catalogue, and novelty audits completed
 
 ## Reproducible run order
 
 ```bash
 python scripts/run_gaia_query.py \
-  --query queries/gaia_sb1_mass_proxy_pilot_v4.adql \
-  --output outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv
+  --query queries/gaia_sb1_contamination_pilot_v5.adql \
+  --output outputs/gaia_sb1_contamination_pilot_v5.ecsv
 
 python scripts/prepare_primary_mass_priors.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   --output outputs/primary_mass_priors.csv
 
 python scripts/infer_mass_posteriors_correlated.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   --primary-masses outputs/primary_mass_priors.csv \
   --output outputs/mass_posteriors_correlated.csv
 
+python scripts/audit_gaia_contamination.py \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+  --output outputs/gaia_contamination_audit.csv
+
 python scripts/plan_desi_files.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   --output outputs/desi_single_epoch_plan.csv
 
 python scripts/probe_desi_files.py \
@@ -106,25 +113,31 @@ python scripts/probe_desi_files.py \
   --output outputs/desi_probe.csv
 
 python scripts/acquire_desi_epochs.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   outputs/desi_probe.csv \
   --output outputs/desi_epochs.csv
 
 python scripts/score_orbit_consistency.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   outputs/desi_epochs.csv \
   --output outputs/orbit_consistency.csv
 
 python scripts/build_followup_triage.py \
-  outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   outputs/orbit_consistency.csv \
   outputs/primary_mass_priors.csv \
   outputs/mass_posteriors_correlated.csv \
+  --contamination outputs/gaia_contamination_audit.csv \
   --output outputs/followup_triage.csv
+
+HOU_COMPACT_CARD_SALT='<private-secret>' \
+python scripts/build_candidate_cards.py \
+  outputs/followup_triage.csv \
+  --output-dir outputs/private_candidate_cards
 ```
 
-See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, `docs/WP2_DESI_FILE_PLAN.md`, `docs/WP3_ORBIT_VALIDATION_PROTOCOL.md`, and `docs/WP4_MASS_INFERENCE_PROTOCOL.md`.
+See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, `docs/WP2_DESI_FILE_PLAN.md`, `docs/WP3_ORBIT_VALIDATION_PROTOCOL.md`, `docs/WP4_MASS_INFERENCE_PROTOCOL.md`, and `docs/WP5_CONTAMINANT_REJECTION_PROTOCOL.md`.
 
 ## Repository policy
 
-All code, queries, tests, experiment manifests, negative results, candidate revisions, and manuscript changes are versioned here. Raw survey data are not committed; immutable URLs, checksums, query text, and derived compact tables are recorded instead.
+All code, queries, tests, experiment manifests, negative results, candidate revisions, and manuscript changes are versioned here. Raw survey data and novelty-sensitive candidate cards are not committed; immutable URLs, checksums, query text, and derived compact summaries are recorded instead.
