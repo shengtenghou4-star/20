@@ -62,6 +62,8 @@ Project initialized on **2026-07-21**.
 - [x] Repository and provenance policy initialized
 - [x] Gaia v4 query restricted to pure `SB1` and `SB1C`
 - [x] Gaia covariance vector, period confidence, flags, and RV-transit counts preserved
+- [x] Gaia `corr_vec` decoded into the period/K1/eccentricity covariance block
+- [x] Correlation-aware physical Monte Carlo implemented with explicit covariance repair audit
 - [x] GSP-Phot gravity/radius inputs preserved for a triage-only M1 proxy
 - [x] Deterministic Gaia source-ID to DESI HEALPix file planner implemented
 - [x] Metadata-only DESI overlap probe implemented
@@ -70,12 +72,13 @@ Project initialized on **2026-07-21**.
 - [x] Edge-on minimum-mass Monte Carlo implemented
 - [x] Isotropic-inclination sensitivity product implemented and explicitly labelled
 - [x] Transparent follow-up gates implemented without compact-object labels
-- [x] Unit tests added for physics, HEALPix, FITS alignment, orbits, mass inference, and triage
-- [x] GitHub Actions configured to run tests, Gaia v4 acquisition, WP4 triage products, and DESI overlap probing
+- [x] Unit tests added for physics, covariance, HEALPix, FITS alignment, orbits, mass inference, and triage
+- [x] GitHub Actions configured to run tests, Gaia v4 acquisition, correlated WP4 products, and DESI overlap probing
+- [ ] Correlation-aware implementation passes pull-request CI
 - [ ] Gaia v4 seed query successfully returned from the live archive
 - [ ] DESI overlap quantified from returned Gaia source IDs
 - [ ] First real multi-epoch orbit-consistency score produced
-- [ ] Gaia `corr_vec` propagated into the orbital uncertainty model
+- [ ] Live `corr_vec` serialization and covariance products validated against returned Gaia rows
 - [ ] Luminous-secondary, hierarchy, stripped-star, and novelty audits completed
 
 ## Reproducible run order
@@ -89,10 +92,10 @@ python scripts/prepare_primary_mass_priors.py \
   outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
   --output outputs/primary_mass_priors.csv
 
-python scripts/infer_mass_posteriors.py \
+python scripts/infer_mass_posteriors_correlated.py \
   outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
   --primary-masses outputs/primary_mass_priors.csv \
-  --output outputs/mass_posteriors.csv
+  --output outputs/mass_posteriors_correlated.csv
 
 python scripts/plan_desi_files.py \
   outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
@@ -116,7 +119,7 @@ python scripts/build_followup_triage.py \
   outputs/gaia_sb1_mass_proxy_pilot_v4.ecsv \
   outputs/orbit_consistency.csv \
   outputs/primary_mass_priors.csv \
-  outputs/mass_posteriors.csv \
+  outputs/mass_posteriors_correlated.csv \
   --output outputs/followup_triage.csv
 ```
 
