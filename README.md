@@ -65,7 +65,9 @@ Project initialized on **2026-07-21**.
 
 - [x] Scientific target and falsifiable hypotheses fixed
 - [x] Public-code and private-evidence repository policy initialized
-- [x] Corrected Gaia v6 query restricted to pure `SB1` and `SB1C`
+- [x] Corrected Gaia v7 query restricted to pure `SB1` and `SB1C`
+- [x] Gaia v7 parser compatibility validated by an encrypted live relay
+- [x] Persistent asynchronous Gaia UWS acquisition implemented and software-audited
 - [x] Gaia covariance vector, bit index, period confidence, flags, RV-transit counts, and blend diagnostics preserved
 - [x] Official SB1/SB1C `bit_index` validation and sparse fixed-length `corr_vec` decoding implemented
 - [x] Optional independent DPAC `nsstools` covariance-parity adapter implemented
@@ -89,8 +91,8 @@ Project initialized on **2026-07-21**.
 - [x] Duplicate-safe final evidence assembly implemented and passed post-fix CI
 - [x] Pseudonymized private candidate-card generator implemented; generated cards remain outside the public repository
 - [x] CI failure diagnostics are preserved as downloadable artifacts
-- [x] Failure-persistent private pilot workflow records complete or partial run packages
-- [ ] Gaia v6 seed query successfully returned and immutably persisted by the current private pilot
+- [x] Encrypted public-runner relay preserves complete or partial source-level bundles without exposing rows
+- [ ] Gaia v7 asynchronous seed query successfully returned and immutably persisted
 - [ ] Live Gaia `corr_vec` serialization validated against DPAC reconstruction on returned rows
 - [ ] DESI overlap quantified from returned Gaia source IDs
 - [ ] First real independent multi-visit orbit-consistency score produced
@@ -101,28 +103,31 @@ Project initialized on **2026-07-21**.
 
 ```bash
 python scripts/run_gaia_query.py \
-  --query queries/gaia_sb1_contamination_pilot_v6.adql \
-  --output outputs/gaia_sb1_contamination_pilot_v6.ecsv
+  --mode async \
+  --query queries/gaia_sb1_contamination_pilot_v7.adql \
+  --output outputs/gaia_sb1_contamination_pilot_v7.ecsv \
+  --execution-duration-seconds 3600 \
+  --wait-timeout-seconds 3600
 
 python scripts/audit_corr_vec_reference.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   --output outputs/corr_vec_reference_audit.csv
 
 python scripts/prepare_primary_mass_priors.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   --output outputs/primary_mass_priors.csv
 
 python scripts/infer_mass_posteriors_correlated.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   --primary-masses outputs/primary_mass_priors.csv \
   --output outputs/mass_posteriors_correlated.csv
 
 python scripts/audit_gaia_contamination.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   --output outputs/gaia_contamination_audit.csv
 
 python scripts/plan_desi_files.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   --output outputs/desi_single_epoch_plan.csv
 
 python scripts/probe_desi_files.py \
@@ -130,24 +135,24 @@ python scripts/probe_desi_files.py \
   --output outputs/desi_probe.csv
 
 python scripts/prioritize_desi_probe.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   outputs/desi_probe.csv \
   --output outputs/desi_probe_prioritized.csv
 
 python scripts/acquire_desi_epochs.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   outputs/desi_probe_prioritized.csv \
   --output outputs/desi_epochs.csv
 
 python scripts/score_orbit_consistency.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   outputs/desi_epochs.csv \
   --output outputs/orbit_consistency.csv \
   --min-clean-epochs 3 \
   --maximum-visit-gap-hours 2
 
 python scripts/build_followup_triage.py \
-  outputs/gaia_sb1_contamination_pilot_v6.ecsv \
+  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
   outputs/orbit_consistency.csv \
   outputs/primary_mass_priors.csv \
   outputs/mass_posteriors_correlated.csv \
