@@ -1,0 +1,66 @@
+-- HOU-COMPACT Gaia DR3 SB1 mass-function-proxy pilot, version 2
+-- Frozen 2026-07-21. Do not edit in place; create v3 for any correction.
+--
+-- Scientific correction relative to gaia_seed_pilot.adql:
+-- the first query mixed astrometric, eclipsing, SB2, and SB1 solutions. This cohort
+-- restricts the pilot to systems with a published primary RV semi-amplitude and no
+-- double-lined solution, then ranks by P*K1^3 as a monotonic proxy for the SB1 mass
+-- function. The eccentricity factor is intentionally omitted from the ranking only;
+-- exact mass functions are calculated downstream with propagated uncertainties.
+
+SELECT TOP 5000
+    n.solution_id,
+    n.source_id,
+    n.nss_solution_type,
+    g.ra AS gaia_ra,
+    g.dec AS gaia_dec,
+    g.ref_epoch AS gaia_ref_epoch,
+    g.parallax AS gaia_parallax,
+    g.parallax_error AS gaia_parallax_error,
+    g.parallax_over_error,
+    g.pmra,
+    g.pmdec,
+    g.ruwe,
+    g.astrometric_params_solved,
+    g.ipd_frac_multi_peak,
+    g.ipd_frac_odd_win,
+    g.phot_g_mean_mag,
+    g.phot_bp_mean_mag,
+    g.phot_rp_mean_mag,
+    g.bp_rp,
+    g.phot_bp_rp_excess_factor,
+    g.non_single_star,
+    g.radial_velocity AS gaia_mean_rv,
+    g.radial_velocity_error AS gaia_mean_rv_error,
+    g.rv_nb_transits,
+    n.period,
+    n.period_error,
+    n.t_periastron,
+    n.t_periastron_error,
+    n.eccentricity,
+    n.eccentricity_error,
+    n.arg_periastron,
+    n.arg_periastron_error,
+    n.center_of_mass_velocity,
+    n.center_of_mass_velocity_error,
+    n.semi_amplitude_primary,
+    n.semi_amplitude_primary_error,
+    n.goodness_of_fit,
+    n.efficiency,
+    n.significance,
+    n.flags,
+    n.bit_index,
+    n.period * n.semi_amplitude_primary * n.semi_amplitude_primary
+        * n.semi_amplitude_primary AS pk1_cubed_proxy
+FROM gaiadr3.nss_two_body_orbit AS n
+JOIN gaiadr3.gaia_source AS g
+    ON n.source_id = g.source_id
+WHERE n.nss_solution_type IN ('SB1', 'SB1C', 'AstroSpectroSB1')
+  AND n.period IS NOT NULL
+  AND n.period > 0
+  AND n.semi_amplitude_primary IS NOT NULL
+  AND n.semi_amplitude_primary > 0
+  AND n.semi_amplitude_primary_error IS NOT NULL
+  AND n.significance IS NOT NULL
+  AND n.significance >= 5
+ORDER BY pk1_cubed_proxy DESC
