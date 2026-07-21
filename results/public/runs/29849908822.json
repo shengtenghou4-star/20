@@ -1,0 +1,37 @@
+{
+  "candidate_safe": true,
+  "contamination_audit": null,
+  "correlated_masses": null,
+  "desi_file_plan": null,
+  "desi_probe": null,
+  "gaia": {
+    "column_names": null,
+    "created_utc": "2026-07-21T16:47:02.038821+00:00",
+    "error_message": "Cannot parse query '-- HOU-COMPACT Gaia DR3 spectroscopic SB1 pilot, version 5\n-- Frozen 2026-07-22. Do not edit in place; create v6 for any correction.\n--\n-- Relative to v4, this query adds Gaia image/photometry/variability diagnostics that\n-- can reveal blending, partial resolution, source duplication, nearby contamination,\n-- or an already-published variability product. These fields are audit evidence only;\n-- none is a standalone rejection criterion.\n\nSELECT TOP 5000\n    n.solution_id,\n    n.source_id,\n    n.nss_solution_type,\n    g.ra AS gaia_ra,\n    g.dec AS gaia_dec,\n    g.ref_epoch AS gaia_ref_epoch,\n    g.parallax AS gaia_parallax,\n    g.parallax_error AS gaia_parallax_error,\n    g.parallax_over_error,\n    g.pmra,\n    g.pmra_error,\n    g.pmdec,\n    g.pmdec_error,\n    g.ruwe,\n    g.astrometric_gof_al,\n    g.astrometric_excess_noise,\n    g.astrometric_excess_noise_sig,\n    g.astrometric_params_solved,\n    g.duplicated_source,\n    g.ipd_gof_harmonic_amplitude,\n    g.ipd_gof_harmonic_phase,\n    g.ipd_frac_multi_peak,\n    g.ipd_frac_odd_win,\n    g.phot_g_n_obs,\n    g.phot_bp_n_obs,\n    g.phot_rp_n_obs,\n    g.phot_g_mean_mag,\n    g.phot_bp_mean_mag,\n    g.phot_rp_mean_mag,\n    g.bp_rp,\n    g.phot_bp_rp_excess_factor,\n    g.phot_bp_n_contaminated_transits,\n    g.phot_bp_n_blended_transits,\n    g.phot_rp_n_contaminated_transits,\n    g.phot_rp_n_blended_transits,\n    g.phot_proc_mode,\n    g.phot_variable_flag,\n    g.has_xp_continuous,\n    g.has_xp_sampled,\n    g.has_rvs,\n    g.has_epoch_photometry,\n    g.has_epoch_rv,\n    g.non_single_star,\n    g.radial_velocity AS gaia_mean_rv,\n    g.radial_velocity_error AS gaia_mean_rv_error,\n    g.rv_nb_transits,\n    g.rv_nb_deblended_transits,\n    g.teff_gspphot,\n    g.teff_gspphot_lower,\n    g.teff_gspphot_upper,\n    g.logg_gspphot,\n    g.logg_gspphot_lower,\n    g.logg_gspphot_upper,\n    g.mh_gspphot,\n    g.mh_gspphot_lower,\n    g.mh_gspphot_upper,\n    g.radius_gspphot,\n    g.radius_gspphot_lower,\n    g.radius_gspphot_upper,\n    n.period,\n    n.period_error,\n    n.t_periastron,\n    n.t_periastron_error,\n    n.eccentricity,\n    n.eccentricity_error,\n    n.arg_periastron,\n    n.arg_periastron_error,\n    n.center_of_mass_velocity,\n    n.center_of_mass_velocity_error,\n    n.semi_amplitude_primary,\n    n.semi_amplitude_primary_error,\n    n.rv_n_obs_primary,\n    n.rv_n_good_obs_primary,\n    n.conf_spectro_period,\n    n.obj_func,\n    n.goodness_of_fit,\n    n.efficiency,\n    n.significance,\n    n.flags,\n    n.bit_index,\n    n.corr_vec,\n    n.period * n.semi_amplitude_primary * n.semi_amplitude_primary\n        * n.semi_amplitude_primary AS pk1_cubed_proxy\nFROM gaiadr3.nss_two_body_orbit AS n\nJOIN gaiadr3.gaia_source AS g\n    ON n.source_id = g.source_id\nWHERE n.nss_solution_type IN ('SB1', 'SB1C')\n  AND n.period IS NOT NULL\n  AND n.period > 0\n  AND n.period_error IS NOT NULL\n  AND n.semi_amplitude_primary IS NOT NULL\n  AND n.semi_amplitude_primary > 0\n  AND n.semi_amplitude_primary_error IS NOT NULL\n  AND n.semi_amplitude_primary_error > 0\n  AND n.significance IS NOT NULL\n  AND n.significance >= 5\nORDER BY n.period * n.semi_amplitude_primary * n.semi_amplitude_primary\n    * n.semi_amplitude_primary DESC\n' for job 'cbf4755e-8523-11f1-982e-bc97e148b76b-O': 3 unresolved identifiers: radius_gspphot [l.66 c.5 - l.66 c.21], radius_gspphot_lower [l.67 c.5 - l.67 c.27], radius_gspphot_upper [l.68 c.5 - l.68 c.27] !\n - Unknown column \"g.radius_gspphot\" !\n - Unknown column \"g.radius_gspphot_lower\" !\n - Unknown column \"g.radius_gspphot_upper\" !",
+    "error_type": "DALQueryError",
+    "output_exists": false,
+    "output_sha256": null,
+    "query_sha256": "02e739a6333930a72c9585a46696165948fada1a7c553222b07f1d74e167289e",
+    "row_count": null,
+    "status": "failure",
+    "tap_url": "https://gea.esac.esa.int/tap-server/tap"
+  },
+  "interpretation_boundary": "This receipt contains only candidate-safe counts, hashes, schema, step outcomes, and bounded error text. It is not an astronomical result or candidate list.",
+  "primary_mass": null,
+  "ref": "refs/heads/main",
+  "repository": "shengtenghou4-star/20",
+  "run_attempt": 1,
+  "run_id": 29849908822,
+  "schema_version": "0.2",
+  "step_outcomes": {
+    "contamination_audit": "skipped",
+    "correlated_masses": "skipped",
+    "desi_file_plan": "skipped",
+    "desi_probe": "skipped",
+    "gaia_query": "failure",
+    "install": "success",
+    "primary_mass": "skipped",
+    "tests": "success"
+  },
+  "trigger_sha": "9f16405f505a52a0f211cc95a2129a8b1468fd01"
+}
