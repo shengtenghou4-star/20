@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: gaia-sb1-wp5-pilot
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -100,6 +100,7 @@ jobs:
           path: |
             outputs/gaia_sb1_contamination_pilot_v5.ecsv
             outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json
+            outputs/gaia_sb1_contamination_pilot_v5.ecsv.failure.manifest.json
             outputs/primary_mass_priors.csv
             outputs/primary_mass_priors.csv.manifest.json
             outputs/mass_posteriors_correlated.csv
@@ -145,7 +146,11 @@ jobs:
                   return None
               return {key: payload.get(key) for key in keys}
 
-          gaia = load('outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json')
+          gaia_success = load('outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json')
+          gaia_failure = load(
+              'outputs/gaia_sb1_contamination_pilot_v5.ecsv.failure.manifest.json'
+          )
+          gaia = gaia_success or gaia_failure
           primary = load('outputs/primary_mass_priors.csv.manifest.json')
           masses = load('outputs/mass_posteriors_correlated.csv.manifest.json')
           contamination = load('outputs/gaia_contamination_audit.csv.manifest.json')
@@ -153,7 +158,7 @@ jobs:
           probe = load('outputs/desi_probe.csv.manifest.json')
 
           receipt = {
-              'schema_version': '0.1',
+              'schema_version': '0.2',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': int(os.environ['GITHUB_RUN_ID']),
@@ -171,8 +176,9 @@ jobs:
                   'desi_probe': os.environ.get('PROBE_OUTCOME'),
               },
               'gaia': select(gaia, [
-                  'created_utc', 'tap_url', 'query_sha256', 'output_sha256',
-                  'row_count', 'column_names'
+                  'status', 'created_utc', 'tap_url', 'query_sha256',
+                  'output_sha256', 'row_count', 'column_names', 'error_type',
+                  'error_message', 'output_exists'
               ]),
               'primary_mass': select(primary, [
                   'input_rows', 'rows_attempted', 'output_rows', 'status_counts',
@@ -196,7 +202,8 @@ jobs:
               ]),
               'interpretation_boundary': (
                   'This receipt contains only candidate-safe counts, hashes, schema, '
-                  'and step outcomes. It is not an astronomical result or candidate list.'
+                  'step outcomes, and bounded error text. It is not an astronomical '
+                  'result or candidate list.'
               ),
           }
           output = Path('results/public/runs') / f"{receipt['run_id']}.json"
