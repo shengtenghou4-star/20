@@ -33,7 +33,12 @@ def solve_kepler(
     tolerance: float = 1e-13,
     max_iterations: int = 100,
 ) -> np.ndarray:
-    """Solve Kepler's equation ``E - e sin(E) = M`` with vectorized Newton steps."""
+    """Solve ``E - e sin(E) = M`` by monotonic vectorized bisection.
+
+    For ``0 <= e < 1`` the left-hand side is strictly increasing, so the wrapped
+    solution is uniquely bracketed by ``[-pi, pi]``. Bisection is slightly slower than
+    unrestricted Newton iteration but cannot diverge for high-eccentricity systems.
+    """
     if not math.isfinite(eccentricity) or not 0 <= eccentricity < 1:
         raise ValueError("eccentricity must be finite and satisfy 0 <= e < 1")
     if tolerance <= 0 or not math.isfinite(tolerance):
@@ -45,16 +50,17 @@ def solve_kepler(
     if not np.all(np.isfinite(mean)):
         raise ValueError("mean anomaly values must be finite")
     wrapped = (mean + math.pi) % _TWO_PI - math.pi
-    estimate = wrapped.copy() if eccentricity < 0.8 else np.full_like(wrapped, math.pi)
+    low = np.full_like(wrapped, -math.pi, dtype=float)
+    high = np.full_like(wrapped, math.pi, dtype=float)
 
     for _ in range(max_iterations):
-        residual = estimate - eccentricity * np.sin(estimate) - wrapped
-        derivative = 1.0 - eccentricity * np.cos(estimate)
-        step = residual / derivative
-        estimate -= step
-        if np.max(np.abs(step), initial=0.0) <= tolerance:
-            return estimate
-    raise RuntimeError("Kepler solver did not converge")
+        midpoint = 0.5 * (low + high)
+        residual = midpoint - eccentricity * np.sin(midpoint) - wrapped
+        high = np.where(residual > 0.0, midpoint, high)
+        low = np.where(residual > 0.0, low, midpoint)
+        if np.max(high - low, initial=0.0) <= 2.0 * tolerance:
+            return 0.5 * (low + high)
+    raise RuntimeError("Kepler solver did not converge within the requested tolerance")
 
 
 def true_anomaly_from_eccentric_anomaly(
