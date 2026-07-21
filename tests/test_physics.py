@@ -3,6 +3,7 @@ import math
 import pytest
 
 from hou_compact.physics import (
+    companion_mass_from_mass_function,
     minimum_companion_mass,
     rv_pairwise_significance,
     rv_variability_chi2,
@@ -30,6 +31,21 @@ def test_minimum_companion_mass_inverts_equation() -> None:
     assert recovered == pytest.approx(companion, rel=1e-9)
 
 
+def test_inclined_companion_mass_inverts_equation() -> None:
+    primary = 1.2
+    companion = 5.0
+    sin_inclination = 0.5
+    mass_function = (
+        companion**3 * sin_inclination**3 / (primary + companion) ** 2
+    )
+    recovered = companion_mass_from_mass_function(
+        primary,
+        mass_function,
+        sin_inclination,
+    )
+    assert recovered == pytest.approx(companion, rel=1e-9)
+
+
 def test_constant_rv_chi_square() -> None:
     chi2, dof, mean = rv_variability_chi2([10.0, 10.0, 10.0], [1.0, 1.0, 1.0])
     assert chi2 == pytest.approx(0.0)
@@ -54,3 +70,8 @@ def test_pairwise_significance() -> None:
 def test_mass_function_rejects_invalid_inputs(args: tuple[float, float, float]) -> None:
     with pytest.raises(ValueError):
         spectroscopic_mass_function(*args)
+
+
+def test_companion_mass_rejects_face_on_zero_sine() -> None:
+    with pytest.raises(ValueError):
+        companion_mass_from_mass_function(1.0, 0.1, 0.0)
