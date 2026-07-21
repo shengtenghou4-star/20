@@ -166,10 +166,12 @@ def audit_gaia_contamination(
         signals.append("deblended_rv_fraction_above_caution")
 
     variable_flag = str(row.get("phot_variable_flag", "")).strip().upper()
-    if not variable_flag:
-        missing.append("phot_variable_flag")
+    if not variable_flag or variable_flag == "NOT_AVAILABLE":
+        missing.append("phot_variable_flag_not_available")
     elif variable_flag == "VARIABLE":
         signals.append("gaia_photometric_variable")
+    elif variable_flag != "CONSTANT":
+        missing.append("phot_variable_flag_unrecognized")
 
     has_xp = _boolean(row, "has_xp_continuous") or _boolean(row, "has_xp_sampled")
     has_rvs = _boolean(row, "has_rvs")
