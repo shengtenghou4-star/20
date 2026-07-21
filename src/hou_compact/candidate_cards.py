@@ -63,18 +63,43 @@ def _integer(row: Mapping[str, object], key: str) -> int | None:
         return None
 
 
+def _boolean(row: Mapping[str, object], key: str) -> bool | None:
+    value = row.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    try:
+        if hasattr(value, "item"):
+            value = value.item()
+    except (TypeError, ValueError):
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"true", "1", "yes"}:
+        return True
+    if normalized in {"false", "0", "no"}:
+        return False
+    return None
+
+
 def candidate_card_eligibility(
     row: Mapping[str, object],
     config: CandidateCardConfig = CandidateCardConfig(),
 ) -> tuple[bool, tuple[str, ...]]:
     """Check whether a row may enter the private candidate-card queue."""
     reasons: list[str] = []
+    source_id = _integer(row, "source_id")
+    solution_id = _integer(row, "solution_id")
     triage_rank = _integer(row, "triage_rank")
     blockers = str(row.get("blockers", "")).strip()
     orbit_status = str(row.get("orbit_status", "")).strip()
     mass_status = str(row.get("mass_status", "")).strip()
     contamination_status = str(row.get("gaia_contamination_status", "")).strip()
 
+    if source_id is None or solution_id is None:
+        reasons.append("source_or_solution_identifier_missing")
     if triage_rank is None or triage_rank < config.minimum_triage_rank:
         reasons.append("triage_rank_below_private_card_gate")
     if blockers:
@@ -99,8 +124,10 @@ def build_candidate_card(
     if not eligible:
         raise ValueError("row is not eligible: " + ";".join(reasons))
 
-    source_id = row.get("source_id")
-    solution_id = row.get("solution_id")
+    source_id = _integer(row, "source_id")
+    solution_id = _integer(row, "solution_id")
+    assert source_id is not None
+    assert solution_id is not None
     pseudonym = candidate_pseudonym(
         source_id,
         solution_id,
@@ -126,7 +153,7 @@ def build_candidate_card(
             "bp_rp_mag": _finite(row, "bp_rp"),
         },
         "gaia_orbit": {
-            "solution_type": row.get("nss_solution_type"),
+            "solution_type": str(row.get("nss_solution_type", "")),
             "period_days": _finite(row, "period"),
             "k1_kms": _finite(row, "semi_amplitude_primary"),
             "eccentricity": _finite(row, "eccentricity"),
@@ -153,16 +180,16 @@ def build_candidate_card(
             "minimum_m2_q16_solar": _finite(row, "minimum_m2_q16_solar"),
             "minimum_m2_q50_solar": _finite(row, "minimum_m2_q50_solar"),
             "minimum_m2_q84_solar": _finite(row, "minimum_m2_q84_solar"),
-            "covariance_mode": row.get("orbital_covariance_mode"),
-            "covariance_regularized": row.get(
-                "minimum_covariance_regularized"
+            "covariance_mode": str(row.get("orbital_covariance_mode", "")),
+            "covariance_regularized": _boolean(
+                row, "minimum_covariance_regularized"
             ),
             "physical_draw_acceptance_fraction": _finite(
                 row, "minimum_physical_draw_acceptance_fraction"
             ),
         },
         "contamination_audit": {
-            "gaia_status": row.get("gaia_contamination_status"),
+            "gaia_status": str(row.get("gaia_contamination_status", "")),
             "signal_count": _integer(row, "gaia_contamination_signal_count"),
             "signals": str(row.get("gaia_contamination_signals", "")),
             "missing_fields": str(
@@ -173,7 +200,7 @@ def build_candidate_card(
             ),
         },
         "triage": {
-            "stage": row.get("triage_stage"),
+            "stage": str(row.get("triage_stage", "")),
             "rank": _integer(row, "triage_rank"),
             "passed_gates": str(row.get("passed_gates", "")),
             "cautions": str(row.get("cautions", "")),
