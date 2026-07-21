@@ -38,7 +38,10 @@ class AlternativeHypothesisConfig:
         ):
             if not checks or any(not str(check).strip() for check in checks):
                 raise ValueError(f"{name} must contain non-empty check names")
-            normalized = [str(check).strip().casefold() for check in checks]
+            normalized = [
+                str(check).strip().casefold().replace("-", "_").replace(" ", "_")
+                for check in checks
+            ]
             if len(set(normalized)) != len(normalized):
                 raise ValueError(f"{name} contains duplicate check names")
 
