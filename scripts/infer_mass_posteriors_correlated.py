@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Gaia-correlation-aware SB1/SB1C mass products for a pilot catalogue."""
+"""Generate bit-index-validated Gaia SB1/SB1C mass products for a catalogue."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def read_table(path: Path) -> pd.DataFrame:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("gaia", type=Path, help="Gaia v4 SB1/SB1C seed table")
+    parser.add_argument("gaia", type=Path, help="Gaia v5 SB1/SB1C seed table")
     parser.add_argument(
         "--primary-masses",
         type=Path,
@@ -70,6 +70,12 @@ def _flatten_product(prefix: str, product: dict[str, object]) -> dict[str, objec
         f"{prefix}_n_draws": product["n_draws"],
         f"{prefix}_median_sin_inclination": product["median_sin_inclination"],
         f"{prefix}_interpretation": product["interpretation"],
+        f"{prefix}_bit_index": product["bit_index"],
+        f"{prefix}_corr_vec_decoding_mode": product["corr_vec_decoding_mode"],
+        f"{prefix}_corr_vec_raw_length": product["corr_vec_raw_length"],
+        f"{prefix}_corr_vec_coefficient_count": product[
+            "corr_vec_coefficient_count"
+        ],
         f"{prefix}_orbital_parameter_names_json": json.dumps(
             product["orbital_parameter_names"], separators=(",", ":")
         ),
@@ -117,6 +123,7 @@ def main() -> None:
     required_gaia = {
         *keys,
         "nss_solution_type",
+        "bit_index",
         "period",
         "period_error",
         "semi_amplitude_primary",
@@ -126,19 +133,19 @@ def main() -> None:
     missing_gaia = sorted(required_gaia - set(gaia.columns))
     if missing_gaia:
         raise KeyError(f"Gaia table is missing columns: {missing_gaia}")
-    required_primary = {
+    required_primary = [
         *keys,
         "primary_mass_solar",
         "primary_mass_error_solar",
-    }
-    missing_primary = sorted(required_primary - set(primary.columns))
+    ]
+    missing_primary = sorted(set(required_primary) - set(primary.columns))
     if missing_primary:
         raise KeyError(f"primary-mass table is missing columns: {missing_primary}")
     if primary.duplicated(keys).any():
         raise ValueError("primary-mass table contains duplicate source/solution rows")
 
     merged = gaia.merge(
-        primary[list(required_primary)],
+        primary[required_primary],
         on=keys,
         how="left",
         validate="one_to_one",
@@ -153,9 +160,10 @@ def main() -> None:
             "source_id": source_id,
             "solution_id": solution_id,
             "nss_solution_type": solution_type,
+            "bit_index": row["bit_index"],
             "status": "input_error",
             "error": "",
-            "orbital_covariance_mode": "gaia_corr_vec",
+            "orbital_covariance_mode": "gaia_corr_vec_bit_index_validated",
         }
         try:
             period = _optional_float(row["period"])
@@ -192,6 +200,7 @@ def main() -> None:
             seed = _stable_seed(args.base_seed, source_id, solution_id)
             products = draw_standard_gaia_correlated_products(
                 solution_type=solution_type,
+                bit_index=row["bit_index"],
                 corr_vec=row["corr_vec"],
                 period_days=float(period),
                 period_error_days=float(period_error),
@@ -230,6 +239,14 @@ def main() -> None:
     status_counts = {
         str(key): int(value) for key, value in result["status"].value_counts().items()
     }
+    decoding_counts: dict[str, int] = {}
+    if "minimum_corr_vec_decoding_mode" in result.columns:
+        decoding_counts = {
+            str(key): int(value)
+            for key, value in result.loc[
+                result["status"].eq("scored"), "minimum_corr_vec_decoding_mode"
+            ].value_counts().items()
+        }
     manifest = {
         "gaia_input": str(args.gaia),
         "gaia_input_sha256": sha256_file(args.gaia),
@@ -241,6 +258,7 @@ def main() -> None:
         "rows_attempted": len(rows),
         "output_rows": len(result),
         "status_counts": status_counts,
+        "corr_vec_decoding_counts": decoding_counts,
         "settings": {
             "n_draws": args.n_draws,
             "max_rows": args.max_rows,
@@ -248,7 +266,7 @@ def main() -> None:
             "minimum_isotropic_inclination_deg": (
                 args.minimum_isotropic_inclination_deg
             ),
-            "orbital_covariance_mode": "gaia_corr_vec",
+            "orbital_covariance_mode": "gaia_corr_vec_bit_index_validated",
         },
         "interpretation_boundary": (
             "The edge-on product is a minimum-mass distribution. The isotropic product "
