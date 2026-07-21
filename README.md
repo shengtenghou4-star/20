@@ -141,7 +141,7 @@ python scripts/build_candidate_cards.py \
   --output-dir outputs/private_candidate_cards
 ```
 
-See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, `docs/WP2_DESI_FILE_PLAN.md`, `docs/WP3_ORBIT_VALIDATION_PROTOCOL.md`, `docs/WP4_MASS_INFERENCE_PROTOCOL.md`, and `docs/WP5_CONTAMINANT_REJECTION_PROTOCOL.md`.
+See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, `docs/WP2_DESI_FILE_PLAN.md`, `docs/WP3_ORBIT_VALIDATION_PROTOCOL.md`, `docs/WP4_MASS_INFERENCE_PROTOCOL.md`, `docs/WP5_CONTAMINANT_REJECTION_PROTOCOL.md`, and `audits/CI_HISTORY.md`.
 
 ## Repository policy
 
