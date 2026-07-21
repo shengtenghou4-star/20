@@ -1,0 +1,51 @@
+name: gaia-pilot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gaia-pilot.yml"
+      - "queries/gaia_seed_pilot.adql"
+      - "src/hou_compact/gaia.py"
+      - "scripts/run_gaia_query.py"
+
+permissions:
+  contents: read
+
+jobs:
+  acquire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e .
+      - name: Execute frozen Gaia pilot query
+        run: python scripts/run_gaia_query.py --output outputs/gaia_seed_pilot.ecsv
+      - name: Record workflow provenance
+        run: |
+          python - <<'PY'
+          import json, os, pathlib
+          path = pathlib.Path('outputs/github_actions_provenance.json')
+          path.write_text(json.dumps({
+              'repository': os.environ.get('GITHUB_REPOSITORY'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'sha': os.environ.get('GITHUB_SHA'),
+              'ref': os.environ.get('GITHUB_REF'),
+          }, indent=2, sort_keys=True), encoding='utf-8')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gaia-seed-pilot
+          path: |
+            outputs/gaia_seed_pilot.ecsv
+            outputs/gaia_seed_pilot.ecsv.manifest.json
+            outputs/github_actions_provenance.json
+          if-no-files-found: error
+          retention-days: 30
