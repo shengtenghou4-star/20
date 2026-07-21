@@ -1,0 +1,27 @@
+{
+  "candidate_safe": true,
+  "contamination_audit": null,
+  "correlated_masses": null,
+  "desi_file_plan": null,
+  "desi_probe": null,
+  "gaia": null,
+  "interpretation_boundary": "This receipt contains only candidate-safe counts, hashes, schema, step outcomes, and bounded error text. It is not an astronomical result or candidate list.",
+  "primary_mass": null,
+  "query_version": "v6",
+  "ref": "refs/heads/main",
+  "repository": "shengtenghou4-star/20",
+  "run_attempt": 1,
+  "run_id": 29850507965,
+  "schema_version": "0.2",
+  "step_outcomes": {
+    "contamination_audit": "skipped",
+    "correlated_masses": "skipped",
+    "desi_file_plan": "skipped",
+    "desi_probe": "skipped",
+    "gaia_query": "skipped",
+    "install": "success",
+    "primary_mass": "skipped",
+    "tests": "failure"
+  },
+  "trigger_sha": "99c1c2c08844bafbc8144698a748fa3c929051fa"
+}
