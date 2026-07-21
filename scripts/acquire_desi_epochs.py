@@ -1,121 +1,66 @@
 #!/usr/bin/env python3
-"""Download only confirmed DESI files and extract Gaia-matched epoch rows safely."""
+"""Download selected DESI single-epoch files and extract Gaia-matched RV rows."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import os
-import tempfile
-import time
+import math
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 import pandas as pd
 from astropy.table import Table
 
-from hou_compact.desi import extract_single_epoch_rows, gaia_source_id_to_healpix
+from hou_compact.desi import (
+    download_file_bounded,
+    extract_single_epoch_rows,
+    source_id_to_healpix,
+)
 from hou_compact.gaia import sha256_file
-
-USER_AGENT = "HOU-COMPACT/0.1 (public astronomy research; selective acquisition)"
-_ALLOWED_PREFIX = "https://data.desi.lbl.gov/"
 
 
 def read_table(path: Path) -> pd.DataFrame:
-    if path.suffix.lower() == ".csv":
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
         return pd.read_csv(path)
-    if path.suffix.lower() in {".parquet", ".pq"}:
+    if suffix in {".parquet", ".pq"}:
         return pd.read_parquet(path)
     return Table.read(path).to_pandas()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("gaia", type=Path, help="Gaia seed table containing source_id")
-    parser.add_argument("probe", type=Path, help="DESI probe CSV with exists=true rows")
-    parser.add_argument("--output", type=Path, default=Path("outputs/desi_epochs.csv"))
-    parser.add_argument("--cache-dir", type=Path, default=Path("data/raw/desi"))
-    parser.add_argument("--max-files", type=int, default=20)
-    parser.add_argument("--max-file-gb", type=float, default=1.0)
-    parser.add_argument("--max-total-gb", type=float, default=2.0)
-    parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("gaia", type=Path, help="Gaia seed table")
+    parser.add_argument("probe", type=Path, help="DESI file probe table")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("outputs/desi_epochs.csv"),
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("data/raw/desi_single_epoch"),
+    )
+    parser.add_argument("--max-files", type=int, default=32)
+    parser.add_argument("--max-file-gb", type=float, default=3.0)
+    parser.add_argument("--max-total-gb", type=float, default=20.0)
+    parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--retries", type=int, default=2)
+    parser.add_argument("--maximum-match-separation-arcsec", type=float, default=1.0)
+    parser.add_argument("--minimum-ambiguity-margin-arcsec", type=float, default=0.1)
     parser.add_argument("--remove-fits-after-extraction", action="store_true")
     return parser.parse_args()
 
 
-def _as_bool(series: pd.Series) -> pd.Series:
-    if series.dtype == bool:
-        return series
-    return series.astype(str).str.lower().isin({"1", "true", "yes"})
-
-
-def _safe_relative_path(value: object) -> Path:
-    path = Path(str(value))
-    if path.is_absolute() or ".." in path.parts:
-        raise ValueError(f"unsafe relative path: {value!r}")
-    return path
-
-
-def download_file(
-    url: str,
-    destination: Path,
-    *,
-    max_bytes: int,
-    timeout: float,
-    retries: int,
-) -> tuple[int, str]:
-    """Atomically download one allow-listed file and return size and SHA256."""
-    if not url.startswith(_ALLOWED_PREFIX):
-        raise ValueError(f"URL outside DESI allow-list: {url}")
-    if destination.exists():
-        size = destination.stat().st_size
-        if size > max_bytes:
-            raise ValueError(f"cached file exceeds byte limit: {destination}")
-        return size, sha256_file(destination)
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    last_error: Exception | None = None
-    for attempt in range(retries + 1):
-        temp_name: str | None = None
-        try:
-            request = Request(url, headers={"User-Agent": USER_AGENT})
-            with urlopen(request, timeout=timeout) as response:
-                length = response.headers.get("Content-Length")
-                if length is not None and int(length) > max_bytes:
-                    raise ValueError(f"remote file exceeds byte limit: {length} > {max_bytes}")
-                digest = hashlib.sha256()
-                written = 0
-                with tempfile.NamedTemporaryFile(
-                    dir=destination.parent,
-                    prefix=f".{destination.name}.",
-                    delete=False,
-                ) as handle:
-                    temp_name = handle.name
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > max_bytes:
-                            raise ValueError(
-                                f"download exceeded byte limit: {written} > {max_bytes}"
-                            )
-                        handle.write(chunk)
-                        digest.update(chunk)
-                os.replace(temp_name, destination)
-                return written, digest.hexdigest()
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError) as error:
-            last_error = error
-            if temp_name is not None:
-                Path(temp_name).unlink(missing_ok=True)
-            if isinstance(error, ValueError) or attempt == retries:
-                raise
-            time.sleep(1.0 * 2**attempt)
-    assert last_error is not None
-    raise last_error
+def _local_path(cache_dir: Path, url: str) -> Path:
+    marker = "/rv_output/"
+    if marker not in url:
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
+        return cache_dir / f"{digest}.fits"
+    relative = url.split(marker, 1)[1]
+    return cache_dir / "rv_output" / relative
 
 
 def main() -> None:
@@ -123,85 +68,114 @@ def main() -> None:
     if args.max_files < 1:
         raise ValueError("max_files must be positive")
     if args.max_file_gb <= 0 or args.max_total_gb <= 0:
-        raise ValueError("byte limits must be positive")
-    if args.retries < 0:
-        raise ValueError("retries must be non-negative")
+        raise ValueError("download size limits must be positive")
+    if args.maximum_match_separation_arcsec <= 0:
+        raise ValueError("maximum_match_separation_arcsec must be positive")
+    if args.minimum_ambiguity_margin_arcsec < 0:
+        raise ValueError("minimum_ambiguity_margin_arcsec must be non-negative")
+    maximum_file_bytes = int(args.max_file_gb * 1024**3)
+    maximum_total_bytes = int(args.max_total_gb * 1024**3)
 
     gaia = read_table(args.gaia)
-    if "source_id" not in gaia.columns:
-        raise KeyError("Gaia table has no source_id column")
-    probe = pd.read_csv(args.probe)
-    required_probe = {"exists", "url", "relative_path", "survey", "program", "healpix"}
-    missing = sorted(required_probe - set(probe.columns))
-    if missing:
-        raise KeyError(f"probe table is missing columns: {missing}")
+    probe = read_table(args.probe)
+    required_gaia = {"source_id", "gaia_ra", "gaia_dec"}
+    missing_gaia = sorted(required_gaia - set(gaia.columns))
+    if missing_gaia:
+        raise KeyError(f"Gaia input is missing columns: {missing_gaia}")
+    required_probe = {"url", "survey", "program", "healpix"}
+    missing_probe = sorted(required_probe - set(probe.columns))
+    if missing_probe:
+        raise KeyError(f"probe table is missing columns: {missing_probe}")
+    if "status" in probe.columns:
+        probe = probe.loc[probe["status"].isin(["exists", "ok", "200"])]
+    if "exists" in probe.columns:
+        probe = probe.loc[probe["exists"].astype(bool)]
+    if "bytes" in probe.columns:
+        numeric_bytes = pd.to_numeric(probe["bytes"], errors="coerce")
+        probe = probe.loc[numeric_bytes.isna() | numeric_bytes.le(maximum_file_bytes)]
+    probe = probe.head(args.max_files).reset_index(drop=True)
 
     gaia = gaia.copy()
-    gaia["healpix"] = [gaia_source_id_to_healpix(int(value)) for value in gaia["source_id"]]
-    source_ids_by_pixel = {
-        int(healpix): group["source_id"].astype("int64").tolist()
-        for healpix, group in gaia.groupby("healpix")
-    }
-
-    existing = probe.loc[_as_bool(probe["exists"])].copy()
-    existing = existing.sort_values(
-        ["healpix", "survey", "program"], kind="stable"
-    ).head(args.max_files)
-    max_file_bytes = int(args.max_file_gb * 1024**3)
-    max_total_bytes = int(args.max_total_gb * 1024**3)
-    total_downloaded = 0
-    extracted: list[pd.DataFrame] = []
-    file_records: list[dict[str, object]] = []
-
-    for _, item in existing.iterrows():
-        healpix = int(item["healpix"])
-        selected_ids = source_ids_by_pixel.get(healpix, [])
-        if not selected_ids:
-            continue
-        destination = args.cache_dir / _safe_relative_path(item["relative_path"])
-        remaining = max_total_bytes - total_downloaded
+    gaia["_desi_healpix"] = gaia["source_id"].map(
+        lambda value: source_id_to_healpix(int(value))
+    )
+    records: list[pd.DataFrame] = []
+    downloads: list[dict[str, object]] = []
+    total_bytes = 0
+    files_with_matched_rows = 0
+    for _, item in probe.iterrows():
+        url = str(item["url"])
+        local = _local_path(args.cache_dir, url)
+        remaining = maximum_total_bytes - total_bytes
         if remaining <= 0:
             break
-        allowed = min(max_file_bytes, remaining)
-        size, digest = download_file(
-            str(item["url"]),
-            destination,
-            max_bytes=allowed,
+        result = download_file_bounded(
+            url,
+            local,
+            maximum_bytes=min(maximum_file_bytes, remaining),
             timeout=args.timeout,
             retries=args.retries,
         )
-        total_downloaded += size
-        rows = extract_single_epoch_rows(destination, selected_ids)
-        rows["survey"] = str(item["survey"])
-        rows["program"] = str(item["program"])
-        rows["source_url"] = str(item["url"])
-        rows["source_file_sha256"] = digest
-        extracted.append(rows)
-        file_records.append(
-            {
-                "url": str(item["url"]),
-                "relative_path": str(item["relative_path"]),
-                "local_path": str(destination),
-                "sha256": digest,
-                "size_bytes": size,
-                "seed_source_count_in_pixel": len(selected_ids),
-                "extracted_epoch_rows": len(rows),
-            }
+        total_bytes += int(result["bytes"])
+        downloads.append(result)
+        file_healpix = int(item["healpix"])
+        selected_sources = gaia.loc[gaia["_desi_healpix"].eq(file_healpix)].drop(
+            columns=["_desi_healpix"]
         )
+        extracted = extract_single_epoch_rows(
+            local,
+            selected_sources,
+            survey=str(item["survey"]),
+            program=str(item["program"]),
+            healpix=file_healpix,
+            maximum_match_separation_arcsec=args.maximum_match_separation_arcsec,
+            minimum_ambiguity_margin_arcsec=args.minimum_ambiguity_margin_arcsec,
+        )
+        if not extracted.empty:
+            files_with_matched_rows += 1
+            records.append(extracted)
         if args.remove_fits_after_extraction:
-            destination.unlink(missing_ok=True)
+            local.unlink(missing_ok=True)
 
-    if extracted:
-        epochs = pd.concat(extracted, ignore_index=True)
-        key = ["source_id", "targetid", "expid", "survey", "program"]
-        epochs = epochs.drop_duplicates(key).sort_values(
+    if records:
+        epochs = pd.concat(records, ignore_index=True)
+        epochs = epochs.sort_values(
             ["source_id", "mjd", "expid"], kind="stable"
-        )
+        ).reset_index(drop=True)
     else:
-        epochs = pd.DataFrame()
-
+        epochs = pd.DataFrame(
+            columns=[
+                "source_id",
+                "targetid",
+                "expid",
+                "mjd",
+                "vrad",
+                "vrad_err",
+                "success",
+                "rvs_warn",
+                "fiberstatus",
+                "sn_b",
+                "sn_r",
+                "sn_z",
+                "survey",
+                "program",
+                "healpix",
+                "source_match_mode",
+                "source_match_separation_arcsec",
+                "desi_ref_id",
+                "desi_ref_cat",
+            ]
+        )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     epochs.to_csv(args.output, index=False)
+    matched_source_count = (
+        int(epochs["source_id"].nunique()) if "source_id" in epochs.columns else 0
+    )
+    finite_separations = pd.to_numeric(
+        epochs.get("source_match_separation_arcsec", pd.Series(dtype=float)),
+        errors="coerce",
+    )
+    finite_separations = finite_separations.loc[finite_separations.map(math.isfinite)]
     manifest = {
         "gaia_input": str(args.gaia),
         "gaia_input_sha256": sha256_file(args.gaia),
@@ -209,22 +183,44 @@ def main() -> None:
         "probe_input_sha256": sha256_file(args.probe),
         "output": str(args.output),
         "output_sha256": sha256_file(args.output),
-        "existing_probe_rows_considered": len(existing),
-        "files_acquired": len(file_records),
-        "downloaded_or_reused_bytes": total_downloaded,
-        "extracted_epoch_rows": len(epochs),
-        "unique_gaia_sources_with_epochs": (
-            int(epochs["source_id"].nunique()) if not epochs.empty else 0
+        "files_selected": len(probe),
+        "files_downloaded": len(downloads),
+        "files_with_matched_rows": files_with_matched_rows,
+        "downloaded_bytes": total_bytes,
+        "output_rows": len(epochs),
+        "matched_source_count": matched_source_count,
+        "match_mode_counts": (
+            {
+                str(key): int(value)
+                for key, value in epochs["source_match_mode"].value_counts().items()
+            }
+            if "source_match_mode" in epochs.columns
+            else {}
         ),
-        "limits": {
+        "maximum_matched_separation_arcsec": (
+            float(finite_separations.max()) if len(finite_separations) else None
+        ),
+        "settings": {
             "max_files": args.max_files,
-            "max_file_bytes": max_file_bytes,
-            "max_total_bytes": max_total_bytes,
+            "max_file_gb": args.max_file_gb,
+            "max_total_gb": args.max_total_gb,
+            "timeout": args.timeout,
+            "retries": args.retries,
+            "maximum_match_separation_arcsec": args.maximum_match_separation_arcsec,
+            "minimum_ambiguity_margin_arcsec": args.minimum_ambiguity_margin_arcsec,
+            "remove_fits_after_extraction": args.remove_fits_after_extraction,
         },
-        "files": file_records,
+        "downloads": downloads,
+        "interpretation_boundary": (
+            "Rows are Gaia DR3 matches to DESI per-exposure RV products. Positional matches "
+            "use propagated Gaia coordinates and require downstream quality and duplicate "
+            "audits before orbit scoring."
+        ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+    )
     print(json.dumps(manifest, indent=2, sort_keys=True))
 
 
