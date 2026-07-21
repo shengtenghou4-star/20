@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge Gaia, DESI orbit, primary-mass, and mass products into stage-gated triage."""
+"""Merge Gaia, orbit, mass, and optional WP5 evidence into stage-gated triage."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("orbit", type=Path)
     parser.add_argument("primary", type=Path)
     parser.add_argument("mass", type=Path)
+    parser.add_argument(
+        "--contamination",
+        type=Path,
+        help="optional Gaia-side WP5 contamination audit keyed by source_id/solution_id",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -64,23 +69,39 @@ def _rename_status_error(frame: pd.DataFrame, prefix: str) -> pd.DataFrame:
     return frame.rename(columns=rename)
 
 
+def _merge_non_overlapping(
+    base: pd.DataFrame,
+    product: pd.DataFrame,
+    *,
+    name: str,
+) -> pd.DataFrame:
+    """Merge one-to-one while keeping Gaia/base values for duplicate metadata columns."""
+    _require_unique(product, name)
+    overlapping = (set(base.columns) & set(product.columns)) - set(_KEY)
+    trimmed = product.drop(columns=sorted(overlapping), errors="ignore")
+    return base.merge(trimmed, on=_KEY, how="left", validate="one_to_one")
+
+
 def main() -> None:
     args = parse_args()
     gaia = read_table(args.gaia)
     orbit = _rename_status_error(read_table(args.orbit), "orbit")
     primary = _rename_status_error(read_table(args.primary), "primary")
     mass = _rename_status_error(read_table(args.mass), "mass")
-    for frame, name in (
-        (gaia, "gaia"),
-        (orbit, "orbit"),
-        (primary, "primary"),
-        (mass, "mass"),
-    ):
-        _require_unique(frame, name)
+    _require_unique(gaia, "gaia")
 
-    merged = gaia.merge(orbit, on=_KEY, how="left", validate="one_to_one")
-    merged = merged.merge(primary, on=_KEY, how="left", validate="one_to_one")
-    merged = merged.merge(mass, on=_KEY, how="left", validate="one_to_one")
+    merged = _merge_non_overlapping(gaia, orbit, name="orbit")
+    merged = _merge_non_overlapping(merged, primary, name="primary")
+    merged = _merge_non_overlapping(merged, mass, name="mass")
+
+    contamination: pd.DataFrame | None = None
+    if args.contamination is not None:
+        contamination = read_table(args.contamination)
+        merged = _merge_non_overlapping(
+            merged,
+            contamination,
+            name="contamination",
+        )
 
     config = TriageConfig(
         min_period_confidence=args.min_period_confidence,
@@ -108,20 +129,27 @@ def main() -> None:
     stage_counts = {
         str(key): int(value) for key, value in output["triage_stage"].value_counts().items()
     }
-    manifest = {
-        "inputs": {
-            "gaia": {"path": str(args.gaia), "sha256": sha256_file(args.gaia)},
-            "orbit": {"path": str(args.orbit), "sha256": sha256_file(args.orbit)},
-            "primary": {
-                "path": str(args.primary),
-                "sha256": sha256_file(args.primary),
-            },
-            "mass": {"path": str(args.mass), "sha256": sha256_file(args.mass)},
+    input_manifest: dict[str, object] = {
+        "gaia": {"path": str(args.gaia), "sha256": sha256_file(args.gaia)},
+        "orbit": {"path": str(args.orbit), "sha256": sha256_file(args.orbit)},
+        "primary": {
+            "path": str(args.primary),
+            "sha256": sha256_file(args.primary),
         },
+        "mass": {"path": str(args.mass), "sha256": sha256_file(args.mass)},
+    }
+    if args.contamination is not None:
+        input_manifest["contamination"] = {
+            "path": str(args.contamination),
+            "sha256": sha256_file(args.contamination),
+        }
+    manifest = {
+        "inputs": input_manifest,
         "output": str(args.output),
         "output_sha256": sha256_file(args.output),
         "output_rows": len(output),
         "stage_counts": stage_counts,
+        "contamination_audit_merged": contamination is not None,
         "thresholds": {
             "min_period_confidence": config.min_period_confidence,
             "min_clean_desi_epochs": config.min_clean_desi_epochs,
