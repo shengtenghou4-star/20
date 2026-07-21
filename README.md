@@ -6,7 +6,7 @@ HOU-COMPACT is a reproducible search for stars whose astrometric and spectroscop
 
 ## Core question
 
-Can independent DESI DR1 epoch radial velocities confirm, reject, or substantially re-rank Gaia DR3 single-lined spectroscopic-binary solutions that imply unusually massive and faint companions?
+Can independent DESI DR1 radial-velocity visits confirm, reject, or substantially re-rank Gaia DR3 single-lined spectroscopic-binary solutions that imply unusually massive and faint companions?
 
 ## Why this project is distinct
 
@@ -14,7 +14,7 @@ This is a Galactic stellar-dynamics project. It does not rely on galaxy-image mo
 
 ## Falsifiable hypotheses
 
-1. A small, measurable subset of Gaia DR3 SB1/SB1C systems will show DESI epoch velocities consistent with the published orbital phase and amplitude.
+1. A small, measurable subset of Gaia DR3 SB1/SB1C systems will show independent DESI visits consistent with the published orbital phase and amplitude.
 2. Most apparently massive dark companions will be downgraded after accounting for bad orbital solutions, blends, luminous secondary stars, triples, stripped stars, and survey-specific RV systematics.
 3. After strict validation, a ranked tail will remain whose minimum-companion-mass distribution is difficult to reconcile with ordinary luminous binaries.
 
@@ -23,7 +23,7 @@ This is a Galactic stellar-dynamics project. It does not rely on galaxy-image mo
 - Gaia DR3 `gaia_source`
 - Gaia DR3 `nss_two_body_orbit`
 - DESI DR1 MWS stellar VAC coadded measurements
-- DESI DR1 MWS single-epoch RVSpecFit measurements
+- DESI DR1 MWS single-exposure RVSpecFit measurements, aggregated into independent visits
 - Public photometry and catalogues used for contamination and novelty checks
 
 Official documentation:
@@ -37,7 +37,7 @@ Official documentation:
 No object will be called a compact-object candidate from a large inferred mass alone. A candidate must survive:
 
 - Gaia spectroscopic-orbit quality and flag audits;
-- DESI epoch-level fixed-orbit consistency tests;
+- DESI independent-visit fixed-orbit consistency tests;
 - stellar-mass inference with propagated uncertainty;
 - luminous-secondary and blend checks;
 - alternative triple and stripped-star hypotheses;
@@ -48,7 +48,7 @@ No object will be called a compact-object candidate from a large inferred mass a
 
 - **WP0 — Data contract and reproducibility**
 - **WP1 — Gaia SB1/SB1C seed catalogue**
-- **WP2 — DESI epoch extraction and quality control**
+- **WP2 — DESI exposure extraction, visit construction, and quality control**
 - **WP3 — Independent orbit/RV consistency likelihood**
 - **WP4 — Minimum-mass and inclination-sensitivity products**
 - **WP5 — Contaminant rejection**
@@ -68,19 +68,22 @@ Project initialized on **2026-07-21**.
 - [x] Deterministic Gaia source-ID to DESI HEALPix file planner implemented
 - [x] Metadata-only DESI overlap probe implemented
 - [x] Byte-bounded selective DESI downloader and row-aligned extractor implemented
-- [x] Fixed-Gaia-orbit versus constant-RV validation code implemented
+- [x] Close DESI exposures grouped into independent visits by default
+- [x] Within-visit disagreement inflates the visit RV uncertainty
+- [x] Fixed-Gaia-orbit versus constant-RV validation counts visits instead of raw spectra
+- [x] Robust bracketed Kepler solver passed the post-fix synthetic audit
 - [x] Edge-on minimum-mass Monte Carlo implemented
 - [x] Isotropic-inclination sensitivity product implemented and explicitly labelled
 - [x] Gaia-side WP5 blend, structure, contamination, and variability audit implemented
 - [x] Transparent follow-up gates implemented without compact-object labels
 - [x] Pseudonymized private candidate-card generator implemented; generated cards remain outside Git
 - [x] CI failure diagnostics are preserved as downloadable artifacts
-- [x] Unit tests added for physics, covariance, HEALPix, FITS alignment, orbits, mass inference, contamination, triage, and card privacy
-- [x] GitHub Actions configured to run tests, Gaia v5 acquisition, correlated WP4 products, WP5 audit, and DESI overlap probing
-- [ ] Latest WP5 implementation passes pull-request CI
+- [x] Unit tests cover physics, covariance, HEALPix, FITS alignment, visits, orbits, mass inference, contamination, triage, and card privacy
+- [x] Live Gaia workflow constrained to controlled query/workflow changes to prevent redundant archive runs
+- [ ] Exact current independent-visit pipeline passes pull-request CI
 - [ ] Gaia v5 seed query successfully returned from the live archive
 - [ ] DESI overlap quantified from returned Gaia source IDs
-- [ ] First real multi-epoch orbit-consistency score produced
+- [ ] First real multi-visit orbit-consistency score produced
 - [ ] Live `corr_vec` serialization and covariance products validated against returned Gaia rows
 - [ ] Spectral, SED, hierarchy, stripped-star, catalogue, and novelty audits completed
 
@@ -120,7 +123,9 @@ python scripts/acquire_desi_epochs.py \
 python scripts/score_orbit_consistency.py \
   outputs/gaia_sb1_contamination_pilot_v5.ecsv \
   outputs/desi_epochs.csv \
-  --output outputs/orbit_consistency.csv
+  --output outputs/orbit_consistency.csv \
+  --min-clean-epochs 3 \
+  --maximum-visit-gap-hours 2
 
 python scripts/build_followup_triage.py \
   outputs/gaia_sb1_contamination_pilot_v5.ecsv \
