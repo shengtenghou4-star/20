@@ -181,6 +181,17 @@ def run_sync_query(
     )
 
 
+def _cached_job_phase(job: object) -> str | None:
+    """Return the phase already fetched by ``wait`` without another network request."""
+    cached = getattr(job, "_job", None)
+    phase = getattr(cached, "phase", None)
+    if phase is not None:
+        return str(phase)
+    # Synthetic jobs and alternative clients may expose a local phase attribute directly.
+    direct = getattr(job, "phase", None)
+    return None if direct is None else str(direct)
+
+
 def run_async_query(
     query_path: Path,
     output_path: Path,
@@ -188,7 +199,7 @@ def run_async_query(
     tap_url: str = DEFAULT_GAIA_TAP_URL,
     overwrite: bool = False,
     maxrec: int | None = None,
-    execution_duration_seconds: float = 3600.0,
+    execution_duration_seconds: float | None = None,
     wait_timeout_seconds: float = 3600.0,
     fetch_retries: int = 3,
     delete_job: bool = True,
@@ -207,12 +218,13 @@ def run_async_query(
     )
     if maxrec is not None and maxrec < 1:
         raise ValueError("maxrec must be positive when provided")
-    for name, value in (
-        ("execution_duration_seconds", execution_duration_seconds),
-        ("wait_timeout_seconds", wait_timeout_seconds),
+    if execution_duration_seconds is not None and (
+        not math.isfinite(execution_duration_seconds)
+        or execution_duration_seconds <= 0
     ):
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError(f"{name} must be finite and positive")
+        raise ValueError("execution_duration_seconds must be finite and positive")
+    if not math.isfinite(wait_timeout_seconds) or wait_timeout_seconds <= 0:
+        raise ValueError("wait_timeout_seconds must be finite and positive")
     if fetch_retries < 0:
         raise ValueError("fetch_retries must be non-negative")
 
@@ -229,16 +241,20 @@ def run_async_query(
         job = service.submit_job(query, maxrec=maxrec)
         job_details["job_url"] = str(job.url)
         job_details["job_id"] = str(job.job_id)
-        try:
-            job.execution_duration = execution_duration_seconds
-            job_details["execution_duration_configured"] = True
-        except Exception as configuration_error:
+        if execution_duration_seconds is not None:
+            try:
+                job.execution_duration = execution_duration_seconds
+                job_details["execution_duration_configured"] = True
+            except Exception as configuration_error:
+                job_details["execution_duration_configured"] = False
+                job_details["execution_duration_configuration_error"] = (
+                    f"{type(configuration_error).__name__}: {configuration_error}"
+                )[:1000]
+        else:
             job_details["execution_duration_configured"] = False
-            job_details["execution_duration_configuration_error"] = (
-                f"{type(configuration_error).__name__}: {configuration_error}"
-            )[:1000]
+            job_details["execution_duration_configuration_skipped"] = True
         job.run().wait(timeout=wait_timeout_seconds)
-        job_details["terminal_phase"] = str(job.phase)
+        job_details["terminal_phase"] = _cached_job_phase(job)
         job.raise_if_error()
         result = job.fetch_result(max_retries=fetch_retries)
         table = result.to_table()
@@ -255,7 +271,7 @@ def run_async_query(
     except Exception as error:
         if job is not None:
             try:
-                job_details["terminal_phase"] = str(job.phase)
+                job_details["terminal_phase"] = _cached_job_phase(job)
             except Exception:
                 pass
         write_failure_manifest(
