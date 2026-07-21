@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hou-compact"
+version = "0.1.0"
+description = "Gaia x DESI validation pipeline for quiescent compact-object companion candidates"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "astropy>=6.1",
+  "numpy>=1.26",
+  "pandas>=2.2",
+  "pyarrow>=16",
+  "pyvo>=1.5",
+  "scipy>=1.13",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2",
+  "ruff>=0.5",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
