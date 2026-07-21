@@ -7,24 +7,10 @@ on:
     paths:
       - ".github/workflows/gaia-pilot.yml"
       - "queries/gaia_sb1_contamination_pilot_v5.adql"
-      - "src/hou_compact/gaia.py"
-      - "src/hou_compact/desi.py"
-      - "src/hou_compact/physics.py"
-      - "src/hou_compact/orbits.py"
-      - "src/hou_compact/validation.py"
-      - "src/hou_compact/primary.py"
-      - "src/hou_compact/masses.py"
-      - "src/hou_compact/gaia_covariance.py"
-      - "src/hou_compact/correlated_masses.py"
-      - "src/hou_compact/triage.py"
-      - "src/hou_compact/contamination.py"
-      - "scripts/run_gaia_query.py"
-      - "scripts/prepare_primary_mass_priors.py"
-      - "scripts/infer_mass_posteriors_correlated.py"
-      - "scripts/audit_gaia_contamination.py"
-      - "scripts/plan_desi_files.py"
-      - "scripts/probe_desi_files.py"
-      - "tests/**"
+
+concurrency:
+  group: gaia-sb1-wp5-pilot
+  cancel-in-progress: false
 
 permissions:
   contents: read
