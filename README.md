@@ -80,7 +80,7 @@ Project initialized on **2026-07-21**.
 - [x] CI failure diagnostics are preserved as downloadable artifacts
 - [x] Unit tests cover physics, covariance, HEALPix, FITS alignment, visits, orbits, mass inference, contamination, triage, and card privacy
 - [x] Live Gaia workflow constrained to controlled query/workflow changes to prevent redundant archive runs
-- [ ] Exact current independent-visit pipeline passes pull-request CI
+- [x] Independent-visit code passed pull-request lint and the full synthetic test suite in PR #10
 - [ ] Gaia v5 seed query successfully returned from the live archive
 - [ ] DESI overlap quantified from returned Gaia source IDs
 - [ ] First real multi-visit orbit-consistency score produced
