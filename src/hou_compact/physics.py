@@ -26,15 +26,6 @@ def spectroscopic_mass_function(
     """Return the single-lined spectroscopic mass function in solar masses.
 
     f(M) = P K1^3 (1 - e^2)^(3/2) / (2 pi G)
-
-    Parameters
-    ----------
-    period_days:
-        Orbital period in days.
-    k1_kms:
-        Primary radial-velocity semi-amplitude in km/s.
-    eccentricity:
-        Orbital eccentricity in [0, 1).
     """
     if not math.isfinite(period_days) or period_days <= 0:
         raise ValueError("period_days must be finite and positive")
@@ -54,6 +45,57 @@ def spectroscopic_mass_function(
     return f_kg / _M_SUN_KG
 
 
+def companion_mass_from_mass_function(
+    primary_mass_solar: float,
+    mass_function_solar: float,
+    sin_inclination: float = 1.0,
+    *,
+    relative_tolerance: float = 1e-10,
+    max_iterations: int = 256,
+) -> float:
+    """Solve the SB1 mass-function equation for the positive companion mass.
+
+    The root satisfies
+
+        f = (M2^3 sin(i)^3) / (M1 + M2)^2.
+
+    A monotonic bisection solver avoids optimizer-dependent failures.
+    """
+    if not math.isfinite(primary_mass_solar) or primary_mass_solar <= 0:
+        raise ValueError("primary_mass_solar must be finite and positive")
+    if not math.isfinite(mass_function_solar) or mass_function_solar <= 0:
+        raise ValueError("mass_function_solar must be finite and positive")
+    if not math.isfinite(sin_inclination) or not 0 < sin_inclination <= 1:
+        raise ValueError("sin_inclination must be finite and in (0, 1]")
+    if not math.isfinite(relative_tolerance) or relative_tolerance <= 0:
+        raise ValueError("relative_tolerance must be finite and positive")
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be positive")
+
+    sin_cubed = sin_inclination**3
+
+    def residual(m2: float) -> float:
+        return m2**3 * sin_cubed / (primary_mass_solar + m2) ** 2 - mass_function_solar
+
+    low = 0.0
+    high = max(1.0, primary_mass_solar, mass_function_solar / sin_cubed)
+    while residual(high) < 0:
+        high *= 2.0
+        if high > 1e8:
+            raise RuntimeError("failed to bracket companion-mass root")
+
+    for _ in range(max_iterations):
+        midpoint = 0.5 * (low + high)
+        if residual(midpoint) > 0:
+            high = midpoint
+        else:
+            low = midpoint
+        if high - low <= relative_tolerance * max(1.0, midpoint):
+            return 0.5 * (low + high)
+
+    raise RuntimeError("companion_mass_from_mass_function did not converge")
+
+
 def minimum_companion_mass(
     primary_mass_solar: float,
     mass_function_solar: float,
@@ -61,41 +103,14 @@ def minimum_companion_mass(
     relative_tolerance: float = 1e-10,
     max_iterations: int = 256,
 ) -> float:
-    """Solve for the minimum companion mass, assuming sin(i)=1.
-
-    The positive root satisfies
-
-        f = M2^3 / (M1 + M2)^2.
-
-    A monotonic bisection solver is used so this routine has no optimizer-dependent
-    failure mode.
-    """
-    if not math.isfinite(primary_mass_solar) or primary_mass_solar <= 0:
-        raise ValueError("primary_mass_solar must be finite and positive")
-    if not math.isfinite(mass_function_solar) or mass_function_solar <= 0:
-        raise ValueError("mass_function_solar must be finite and positive")
-
-    def residual(m2: float) -> float:
-        return m2**3 / (primary_mass_solar + m2) ** 2 - mass_function_solar
-
-    low = 0.0
-    high = max(1.0, primary_mass_solar, mass_function_solar)
-    while residual(high) < 0:
-        high *= 2.0
-        if high > 1e6:
-            raise RuntimeError("failed to bracket companion-mass root")
-
-    for _ in range(max_iterations):
-        midpoint = 0.5 * (low + high)
-        value = residual(midpoint)
-        if value > 0:
-            high = midpoint
-        else:
-            low = midpoint
-        if high - low <= relative_tolerance * max(1.0, midpoint):
-            return 0.5 * (low + high)
-
-    raise RuntimeError("minimum_companion_mass did not converge")
+    """Return the edge-on minimum companion mass, with sin(i)=1."""
+    return companion_mass_from_mass_function(
+        primary_mass_solar,
+        mass_function_solar,
+        1.0,
+        relative_tolerance=relative_tolerance,
+        max_iterations=max_iterations,
+    )
 
 
 def rv_variability_chi2(
