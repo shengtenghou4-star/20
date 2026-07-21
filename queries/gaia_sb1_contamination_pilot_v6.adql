@@ -1,0 +1,111 @@
+-- HOU-COMPACT Gaia DR3 spectroscopic SB1 pilot, version 6
+-- Frozen 2026-07-22. Do not edit in place; create v7 for any correction.
+--
+-- Correction relative to v5:
+-- GSP-Phot radius and its 16th/84th percentile bounds belong to
+-- gaiadr3.astrophysical_parameters, not gaiadr3.gaia_source. The query now LEFT JOINs
+-- that official table and sources all GSP-Phot stellar parameters from alias `ap`.
+-- The LEFT JOIN preserves valid SB1/SB1C orbital rows even when no AP row is available;
+-- those systems remain explicit primary-mass holds downstream.
+
+SELECT TOP 5000
+    n.solution_id,
+    n.source_id,
+    n.nss_solution_type,
+    g.ra AS gaia_ra,
+    g.dec AS gaia_dec,
+    g.ref_epoch AS gaia_ref_epoch,
+    g.parallax AS gaia_parallax,
+    g.parallax_error AS gaia_parallax_error,
+    g.parallax_over_error,
+    g.pmra,
+    g.pmra_error,
+    g.pmdec,
+    g.pmdec_error,
+    g.ruwe,
+    g.astrometric_gof_al,
+    g.astrometric_excess_noise,
+    g.astrometric_excess_noise_sig,
+    g.astrometric_params_solved,
+    g.duplicated_source,
+    g.ipd_gof_harmonic_amplitude,
+    g.ipd_gof_harmonic_phase,
+    g.ipd_frac_multi_peak,
+    g.ipd_frac_odd_win,
+    g.phot_g_n_obs,
+    g.phot_bp_n_obs,
+    g.phot_rp_n_obs,
+    g.phot_g_mean_mag,
+    g.phot_bp_mean_mag,
+    g.phot_rp_mean_mag,
+    g.bp_rp,
+    g.phot_bp_rp_excess_factor,
+    g.phot_bp_n_contaminated_transits,
+    g.phot_bp_n_blended_transits,
+    g.phot_rp_n_contaminated_transits,
+    g.phot_rp_n_blended_transits,
+    g.phot_proc_mode,
+    g.phot_variable_flag,
+    g.has_xp_continuous,
+    g.has_xp_sampled,
+    g.has_rvs,
+    g.has_epoch_photometry,
+    g.has_epoch_rv,
+    g.non_single_star,
+    g.radial_velocity AS gaia_mean_rv,
+    g.radial_velocity_error AS gaia_mean_rv_error,
+    g.rv_nb_transits,
+    g.rv_nb_deblended_transits,
+    ap.teff_gspphot,
+    ap.teff_gspphot_lower,
+    ap.teff_gspphot_upper,
+    ap.logg_gspphot,
+    ap.logg_gspphot_lower,
+    ap.logg_gspphot_upper,
+    ap.mh_gspphot,
+    ap.mh_gspphot_lower,
+    ap.mh_gspphot_upper,
+    ap.radius_gspphot,
+    ap.radius_gspphot_lower,
+    ap.radius_gspphot_upper,
+    n.period,
+    n.period_error,
+    n.t_periastron,
+    n.t_periastron_error,
+    n.eccentricity,
+    n.eccentricity_error,
+    n.arg_periastron,
+    n.arg_periastron_error,
+    n.center_of_mass_velocity,
+    n.center_of_mass_velocity_error,
+    n.semi_amplitude_primary,
+    n.semi_amplitude_primary_error,
+    n.rv_n_obs_primary,
+    n.rv_n_good_obs_primary,
+    n.conf_spectro_period,
+    n.obj_func,
+    n.goodness_of_fit,
+    n.efficiency,
+    n.significance,
+    n.flags,
+    n.bit_index,
+    n.corr_vec,
+    n.period * n.semi_amplitude_primary * n.semi_amplitude_primary
+        * n.semi_amplitude_primary AS pk1_cubed_proxy
+FROM gaiadr3.nss_two_body_orbit AS n
+JOIN gaiadr3.gaia_source AS g
+    ON n.source_id = g.source_id
+LEFT OUTER JOIN gaiadr3.astrophysical_parameters AS ap
+    ON n.source_id = ap.source_id
+WHERE n.nss_solution_type IN ('SB1', 'SB1C')
+  AND n.period IS NOT NULL
+  AND n.period > 0
+  AND n.period_error IS NOT NULL
+  AND n.semi_amplitude_primary IS NOT NULL
+  AND n.semi_amplitude_primary > 0
+  AND n.semi_amplitude_primary_error IS NOT NULL
+  AND n.semi_amplitude_primary_error > 0
+  AND n.significance IS NOT NULL
+  AND n.significance >= 5
+ORDER BY n.period * n.semi_amplitude_primary * n.semi_amplitude_primary
+    * n.semi_amplitude_primary DESC
