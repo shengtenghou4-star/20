@@ -59,14 +59,46 @@ No object will be called a compact-object candidate from a large inferred mass a
 
 Project initialized on **2026-07-21**.
 
-- [x] Scientific target fixed
-- [x] Repository initialized
-- [x] Data products and first-pass schema identified
-- [ ] Gaia seed query executed
-- [ ] DESI crossmatch executed
-- [ ] First validated candidate ranking
+- [x] Scientific target and falsifiable hypotheses fixed
+- [x] Repository and provenance policy initialized
+- [x] Focused Gaia SB1/SB1C/AstroSpectroSB1 pilot query frozen
+- [x] Deterministic Gaia source-ID to DESI HEALPix file planner implemented
+- [x] Metadata-only DESI overlap probe implemented
+- [x] Byte-bounded selective DESI downloader and row-aligned extractor implemented
+- [x] Fixed-Gaia-orbit versus constant-RV validation code implemented
+- [x] Backup-program measurements excluded by default pending correction validation
+- [ ] Focused Gaia seed query successfully executed against the live archive
+- [ ] DESI overlap quantified from returned Gaia source IDs
+- [ ] First real multi-epoch orbit-consistency score produced
+- [ ] Companion-mass posterior and contaminant rejection completed
 
-See `docs/RESEARCH_PLAN.md` and `docs/DATA_CONTRACT.md` for the operating specification.
+## Reproducible run order
+
+```bash
+python scripts/run_gaia_query.py \
+  --query queries/gaia_sb1_mass_proxy_pilot_v2.adql \
+  --output outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv
+
+python scripts/plan_desi_files.py \
+  outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv \
+  --output outputs/desi_single_epoch_plan.csv
+
+python scripts/probe_desi_files.py \
+  outputs/desi_single_epoch_plan.csv \
+  --output outputs/desi_probe.csv
+
+python scripts/acquire_desi_epochs.py \
+  outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv \
+  outputs/desi_probe.csv \
+  --output outputs/desi_epochs.csv
+
+python scripts/score_orbit_consistency.py \
+  outputs/gaia_sb1_mass_proxy_pilot_v2.ecsv \
+  outputs/desi_epochs.csv \
+  --output outputs/orbit_consistency.csv
+```
+
+See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, and `docs/WP2_DESI_FILE_PLAN.md` for the operating specification.
 
 ## Repository policy
 
