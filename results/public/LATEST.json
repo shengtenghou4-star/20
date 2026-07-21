@@ -1,0 +1,27 @@
+{
+  "claim_boundary": "Candidate-safe aggregate receipt only; no source identifiers or compact-object classifications are included.",
+  "contamination_audit": null,
+  "correlated_masses": null,
+  "covariance_reference": null,
+  "desi_file_plan": null,
+  "desi_probe": null,
+  "gaia_error_message": null,
+  "gaia_error_type": null,
+  "gaia_row_count": null,
+  "gaia_status": null,
+  "latest_run_id": 29850507965,
+  "primary_mass": null,
+  "query_version": "v6",
+  "receipt_path": "results/public/runs/29850507965.json",
+  "step_outcomes": {
+    "contamination_audit": "skipped",
+    "correlated_masses": "skipped",
+    "desi_file_plan": "skipped",
+    "desi_probe": "skipped",
+    "gaia_query": "skipped",
+    "install": "success",
+    "primary_mass": "skipped",
+    "tests": "failure"
+  },
+  "trigger_sha": "99c1c2c08844bafbc8144698a748fa3c929051fa"
+}
