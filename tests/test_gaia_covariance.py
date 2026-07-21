@@ -119,8 +119,9 @@ def test_wrong_bit_index_is_rejected() -> None:
 
 def test_ambiguous_fixed_length_vector_is_rejected() -> None:
     fixed = np.full(231, np.nan)
-    fixed[:6] = [0.1, 0.2, 0.3, 0.4, 0.5, np.nan]
+    fixed[:5] = [0.1, 0.2, 0.3, 0.4, 0.5]
     fixed[100] = 0.8
+    fixed[150] = -0.7
     with pytest.raises(ValueError, match="ambiguous"):
         decode_correlation_matrix(fixed, 4)
 
