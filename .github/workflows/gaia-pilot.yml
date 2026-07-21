@@ -1,4 +1,4 @@
-name: gaia-sb1-wp5-pilot
+name: gaia-sb1-wp5-v6-pilot
 
 on:
   workflow_dispatch:
@@ -6,10 +6,10 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/gaia-pilot.yml"
-      - "queries/gaia_sb1_contamination_pilot_v5.adql"
+      - "queries/gaia_sb1_contamination_pilot_v6.adql"
 
 concurrency:
-  group: gaia-sb1-wp5-pilot
+  group: gaia-sb1-wp5-v6-pilot
   cancel-in-progress: true
 
 permissions:
@@ -33,17 +33,17 @@ jobs:
       - name: Run deterministic unit tests before network acquisition
         id: tests
         run: pytest -q
-      - name: Execute frozen Gaia SB1 v5 pilot query
+      - name: Execute frozen Gaia SB1 v6 pilot query
         id: gaia
         run: |
           python scripts/run_gaia_query.py \
-            --query queries/gaia_sb1_contamination_pilot_v5.adql \
-            --output outputs/gaia_sb1_contamination_pilot_v5.ecsv
+            --query queries/gaia_sb1_contamination_pilot_v6.adql \
+            --output outputs/gaia_sb1_contamination_pilot_v6.ecsv
       - name: Build preliminary GSP-Phot primary-mass priors
         id: primary
         run: |
           python scripts/prepare_primary_mass_priors.py \
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv \
             --output outputs/primary_mass_priors.csv \
             --max-rows 250 \
             --n-draws 5000
@@ -51,7 +51,7 @@ jobs:
         id: masses
         run: |
           python scripts/infer_mass_posteriors_correlated.py \
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv \
             --primary-masses outputs/primary_mass_priors.csv \
             --output outputs/mass_posteriors_correlated.csv \
             --max-rows 100 \
@@ -60,14 +60,14 @@ jobs:
         id: contamination
         run: |
           python scripts/audit_gaia_contamination.py \
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv \
             --output outputs/gaia_contamination_audit.csv \
             --max-rows 5000
       - name: Plan DESI single-epoch files
         id: plan
         run: |
           python scripts/plan_desi_files.py \
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv \
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv \
             --output outputs/desi_single_epoch_plan.csv
       - name: Probe DESI overlap without bulk download
         id: probe
@@ -96,11 +96,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: gaia-sb1-wp5-pilot
+          name: gaia-sb1-wp5-v6-pilot
           path: |
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json
-            outputs/gaia_sb1_contamination_pilot_v5.ecsv.failure.manifest.json
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv.manifest.json
+            outputs/gaia_sb1_contamination_pilot_v6.ecsv.failure.manifest.json
             outputs/primary_mass_priors.csv
             outputs/primary_mass_priors.csv.manifest.json
             outputs/mass_posteriors_correlated.csv
@@ -146,9 +146,9 @@ jobs:
                   return None
               return {key: payload.get(key) for key in keys}
 
-          gaia_success = load('outputs/gaia_sb1_contamination_pilot_v5.ecsv.manifest.json')
+          gaia_success = load('outputs/gaia_sb1_contamination_pilot_v6.ecsv.manifest.json')
           gaia_failure = load(
-              'outputs/gaia_sb1_contamination_pilot_v5.ecsv.failure.manifest.json'
+              'outputs/gaia_sb1_contamination_pilot_v6.ecsv.failure.manifest.json'
           )
           gaia = gaia_success or gaia_failure
           primary = load('outputs/primary_mass_priors.csv.manifest.json')
@@ -160,6 +160,7 @@ jobs:
           receipt = {
               'schema_version': '0.2',
               'candidate_safe': True,
+              'query_version': 'v6',
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': int(os.environ['GITHUB_RUN_ID']),
               'run_attempt': int(os.environ['GITHUB_RUN_ATTEMPT']),
@@ -186,7 +187,7 @@ jobs:
               ]),
               'correlated_masses': select(masses, [
                   'input_rows', 'rows_attempted', 'output_rows', 'status_counts',
-                  'settings'
+                  'corr_vec_decoding_counts', 'settings'
               ]),
               'contamination_audit': select(contamination, [
                   'input_rows', 'rows_attempted', 'output_rows', 'status_counts',
@@ -212,5 +213,5 @@ jobs:
           print(output)
           PY
           git add results/public/runs/
-          git commit -m "Record controlled Gaia WP5 run ${GITHUB_RUN_ID}" || exit 0
+          git commit -m "Record controlled Gaia WP5 v6 run ${GITHUB_RUN_ID}" || exit 0
           git push origin HEAD:main
