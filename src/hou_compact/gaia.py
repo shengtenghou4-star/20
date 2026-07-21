@@ -1,4 +1,4 @@
-"""Gaia TAP acquisition with immutable query and result manifests."""
+"""Gaia TAP acquisition with immutable success and failure manifests."""
 
 from __future__ import annotations
 
@@ -20,6 +20,54 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def success_manifest_path(output_path: Path) -> Path:
+    """Return the immutable success-manifest path for a query output."""
+    return output_path.with_suffix(output_path.suffix + ".manifest.json")
+
+
+def failure_manifest_path(output_path: Path) -> Path:
+    """Return the immutable failure-manifest path for a query attempt."""
+    return output_path.with_suffix(output_path.suffix + ".failure.manifest.json")
+
+
+def _query_provenance(
+    query_path: Path,
+    output_path: Path,
+    *,
+    tap_url: str,
+    query: str,
+) -> dict[str, object]:
+    return {
+        "created_utc": datetime.now(UTC).isoformat(),
+        "tap_url": tap_url,
+        "query_path": str(query_path),
+        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+        "output_path": str(output_path),
+    }
+
+
+def write_failure_manifest(
+    query_path: Path,
+    output_path: Path,
+    *,
+    tap_url: str,
+    query: str,
+    error: BaseException,
+) -> dict[str, object]:
+    """Persist a candidate-safe query-failure receipt and return its payload."""
+    manifest = {
+        **_query_provenance(query_path, output_path, tap_url=tap_url, query=query),
+        "status": "failure",
+        "error_type": type(error).__name__,
+        "error_message": str(error)[:4000],
+        "output_exists": output_path.exists(),
+    }
+    path = failure_manifest_path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
 def run_sync_query(
     query_path: Path,
     output_path: Path,
@@ -32,7 +80,8 @@ def run_sync_query(
     The output format is inferred by Astropy from the file extension. ECSV is the
     recommended pilot format because it is self-describing and diff-friendly for small
     tables. Large production tables should use FITS or Parquet through a later staged
-    conversion.
+    conversion. Network, schema, and server failures produce a separate failure manifest
+    before the exception is re-raised.
     """
     query_path = query_path.resolve()
     output_path = output_path.resolve()
@@ -46,23 +95,31 @@ def run_sync_query(
     if not query.strip():
         raise ValueError("ADQL query is empty")
 
-    service = pyvo.dal.TAPService(tap_url)
-    result = service.search(query)
-    table = result.to_table()
+    try:
+        service = pyvo.dal.TAPService(tap_url)
+        result = service.search(query)
+        table = result.to_table()
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    table.write(output_path, overwrite=overwrite)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        table.write(output_path, overwrite=overwrite)
+    except Exception as error:
+        write_failure_manifest(
+            query_path,
+            output_path,
+            tap_url=tap_url,
+            query=query,
+            error=error,
+        )
+        raise
 
     manifest: dict[str, object] = {
-        "created_utc": datetime.now(UTC).isoformat(),
-        "tap_url": tap_url,
-        "query_path": str(query_path),
-        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
-        "output_path": str(output_path),
+        **_query_provenance(query_path, output_path, tap_url=tap_url, query=query),
+        "status": "success",
         "output_sha256": sha256_file(output_path),
         "row_count": len(table),
         "column_names": list(table.colnames),
     }
-    manifest_path = output_path.with_suffix(output_path.suffix + ".manifest.json")
+    manifest_path = success_manifest_path(output_path)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    failure_manifest_path(output_path).unlink(missing_ok=True)
     return manifest
