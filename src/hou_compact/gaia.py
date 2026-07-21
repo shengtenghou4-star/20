@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -36,6 +37,7 @@ def _query_provenance(
     *,
     tap_url: str,
     query: str,
+    execution_mode: str,
 ) -> dict[str, object]:
     return {
         "created_utc": datetime.now(UTC).isoformat(),
@@ -43,6 +45,7 @@ def _query_provenance(
         "query_path": str(query_path),
         "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
         "output_path": str(output_path),
+        "execution_mode": execution_mode,
     }
 
 
@@ -53,18 +56,80 @@ def write_failure_manifest(
     tap_url: str,
     query: str,
     error: BaseException,
+    execution_mode: str = "sync",
+    details: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Persist a candidate-safe query-failure receipt and return its payload."""
     manifest = {
-        **_query_provenance(query_path, output_path, tap_url=tap_url, query=query),
+        **_query_provenance(
+            query_path,
+            output_path,
+            tap_url=tap_url,
+            query=query,
+            execution_mode=execution_mode,
+        ),
         "status": "failure",
         "error_type": type(error).__name__,
         "error_message": str(error)[:4000],
         "output_exists": output_path.exists(),
+        **(details or {}),
     }
     path = failure_manifest_path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
+def _prepare_query_paths(
+    query_path: Path,
+    output_path: Path,
+    *,
+    overwrite: bool,
+) -> tuple[Path, Path, str]:
+    query_path = query_path.resolve()
+    output_path = output_path.resolve()
+    if not query_path.is_file():
+        raise FileNotFoundError(query_path)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"refusing to overwrite {output_path}")
+    query = query_path.read_text(encoding="utf-8")
+    if not query.strip():
+        raise ValueError("ADQL query is empty")
+    return query_path, output_path, query
+
+
+def _write_success(
+    query_path: Path,
+    output_path: Path,
+    query: str,
+    table: object,
+    *,
+    tap_url: str,
+    execution_mode: str,
+    overwrite: bool,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    table.write(output_path, overwrite=overwrite)
+    manifest: dict[str, object] = {
+        **_query_provenance(
+            query_path,
+            output_path,
+            tap_url=tap_url,
+            query=query,
+            execution_mode=execution_mode,
+        ),
+        "status": "success",
+        "output_sha256": sha256_file(output_path),
+        "row_count": len(table),
+        "column_names": list(table.colnames),
+        **(details or {}),
+    }
+    success_manifest_path(output_path).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    failure_manifest_path(output_path).unlink(missing_ok=True)
     return manifest
 
 
@@ -74,34 +139,20 @@ def run_sync_query(
     *,
     tap_url: str = DEFAULT_GAIA_TAP_URL,
     overwrite: bool = False,
+    maxrec: int | None = None,
 ) -> dict[str, object]:
-    """Execute a frozen ADQL query and write a result plus JSON manifest.
-
-    The output format is inferred by Astropy from the file extension. ECSV is the
-    recommended pilot format because it is self-describing and diff-friendly for small
-    tables. Large production tables should use FITS or Parquet through a later staged
-    conversion. Network, schema, and server failures produce a separate failure manifest
-    before the exception is re-raised.
-    """
-    query_path = query_path.resolve()
-    output_path = output_path.resolve()
-
-    if not query_path.is_file():
-        raise FileNotFoundError(query_path)
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(f"refusing to overwrite {output_path}")
-
-    query = query_path.read_text(encoding="utf-8")
-    if not query.strip():
-        raise ValueError("ADQL query is empty")
-
+    """Execute a short frozen ADQL query through the synchronous TAP endpoint."""
+    query_path, output_path, query = _prepare_query_paths(
+        query_path,
+        output_path,
+        overwrite=overwrite,
+    )
+    if maxrec is not None and maxrec < 1:
+        raise ValueError("maxrec must be positive when provided")
     try:
         service = pyvo.dal.TAPService(tap_url)
-        result = service.search(query)
+        result = service.run_sync(query, maxrec=maxrec)
         table = result.to_table()
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        table.write(output_path, overwrite=overwrite)
     except Exception as error:
         write_failure_manifest(
             query_path,
@@ -109,17 +160,115 @@ def run_sync_query(
             tap_url=tap_url,
             query=query,
             error=error,
+            execution_mode="sync",
+            details={"maxrec": maxrec},
         )
         raise
+    return _write_success(
+        query_path,
+        output_path,
+        query,
+        table,
+        tap_url=tap_url,
+        execution_mode="sync",
+        overwrite=overwrite,
+        details={"maxrec": maxrec},
+    )
 
-    manifest: dict[str, object] = {
-        **_query_provenance(query_path, output_path, tap_url=tap_url, query=query),
-        "status": "success",
-        "output_sha256": sha256_file(output_path),
-        "row_count": len(table),
-        "column_names": list(table.colnames),
+
+def run_async_query(
+    query_path: Path,
+    output_path: Path,
+    *,
+    tap_url: str = DEFAULT_GAIA_TAP_URL,
+    overwrite: bool = False,
+    maxrec: int | None = None,
+    execution_duration_seconds: float = 3600.0,
+    wait_timeout_seconds: float = 3600.0,
+    fetch_retries: int = 3,
+    delete_job: bool = True,
+) -> dict[str, object]:
+    """Execute a frozen ADQL query as a persistent server-side UWS job.
+
+    Gaia's synchronous endpoint may abort expensive joins or ordered queries before the
+    server has time to finish. The asynchronous path submits a UWS job, records its URL and
+    phase, waits for a terminal state, fetches the result, and optionally removes the remote
+    job after the local checksummed table is written.
+    """
+    query_path, output_path, query = _prepare_query_paths(
+        query_path,
+        output_path,
+        overwrite=overwrite,
+    )
+    if maxrec is not None and maxrec < 1:
+        raise ValueError("maxrec must be positive when provided")
+    for name, value in (
+        ("execution_duration_seconds", execution_duration_seconds),
+        ("wait_timeout_seconds", wait_timeout_seconds),
+    ):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    if fetch_retries < 0:
+        raise ValueError("fetch_retries must be non-negative")
+
+    job = None
+    job_details: dict[str, object] = {
+        "maxrec": maxrec,
+        "requested_execution_duration_seconds": execution_duration_seconds,
+        "wait_timeout_seconds": wait_timeout_seconds,
+        "fetch_retries": fetch_retries,
+        "delete_job": delete_job,
     }
-    manifest_path = success_manifest_path(output_path)
-    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
-    failure_manifest_path(output_path).unlink(missing_ok=True)
+    try:
+        service = pyvo.dal.TAPService(tap_url)
+        job = service.submit_job(query, maxrec=maxrec)
+        job_details["job_url"] = str(job.url)
+        job_details["job_id"] = str(job.job_id)
+        try:
+            job.execution_duration = execution_duration_seconds
+            job_details["execution_duration_configured"] = True
+        except Exception as configuration_error:
+            job_details["execution_duration_configured"] = False
+            job_details["execution_duration_configuration_error"] = (
+                f"{type(configuration_error).__name__}: {configuration_error}"
+            )[:1000]
+        job.run().wait(timeout=wait_timeout_seconds)
+        job_details["terminal_phase"] = str(job.phase)
+        job.raise_if_error()
+        result = job.fetch_result(max_retries=fetch_retries)
+        table = result.to_table()
+        manifest = _write_success(
+            query_path,
+            output_path,
+            query,
+            table,
+            tap_url=tap_url,
+            execution_mode="async",
+            overwrite=overwrite,
+            details=job_details,
+        )
+    except Exception as error:
+        if job is not None:
+            try:
+                job_details["terminal_phase"] = str(job.phase)
+            except Exception:
+                pass
+        write_failure_manifest(
+            query_path,
+            output_path,
+            tap_url=tap_url,
+            query=query,
+            error=error,
+            execution_mode="async",
+            details=job_details,
+        )
+        raise
+    finally:
+        if job is not None and delete_job:
+            try:
+                job.delete()
+            except Exception:
+                # The local result/failure manifest is authoritative. Remote cleanup failure
+                # must not invalidate an otherwise complete acquisition product.
+                pass
     return manifest
