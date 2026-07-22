@@ -20,6 +20,9 @@ def _good_row() -> dict[str, object]:
         "gaia_contamination_high_risk_count": 0,
         "gaia_contamination_caution_count": 0,
         "gaia_contamination_context_count": 0,
+        "roche_status": "detached_geometry_consistent",
+        "filling_q16": 0.1,
+        "filling_q50": 0.2,
     }
 
 
@@ -94,6 +97,37 @@ def test_caution_and_context_signals_do_not_block() -> None:
     assert result["triage_stage"] == "very_high_minimum_mass_followup"
     assert "gaia_contamination_caution_signal_count=2" in result["cautions"]
     assert "gaia_nss_context_signal_count=1" in result["cautions"]
+
+
+def test_missing_roche_geometry_fails_closed() -> None:
+    row = _good_row()
+    del row["roche_status"]
+    result = triage_followup(row)
+    assert result["triage_stage"] == "roche_geometry_hold"
+    assert "roche_geometry_audit_missing_or_failed" in result["blockers"]
+
+
+def test_geometry_inconsistency_blocks_high_mass_followup() -> None:
+    row = _good_row()
+    row["roche_status"] = "geometry_inconsistent"
+    row["filling_q16"] = 1.2
+    row["filling_q50"] = 2.0
+    result = triage_followup(row)
+    assert result["triage_stage"] == "roche_geometry_hold"
+    assert result["triage_rank"] == 4
+    assert "primary_overfills_periastron_roche_lobe" in result["blockers"]
+    assert "roche_filling_q16_above_unity" in result["blockers"]
+
+
+def test_near_roche_lobe_is_retained_with_caution() -> None:
+    row = _good_row()
+    row["roche_status"] = "near_or_overflowing_roche_lobe"
+    row["filling_q16"] = 0.6
+    row["filling_q50"] = 0.9
+    result = triage_followup(row)
+    assert result["triage_stage"] == "very_high_minimum_mass_followup"
+    assert "primary_near_periastron_roche_lobe" in result["cautions"]
+    assert "roche_filling_median_above_0p8" in result["cautions"]
 
 
 def test_threshold_configuration_is_validated() -> None:
