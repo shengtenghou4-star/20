@@ -13,12 +13,9 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
-
-import pandas as pd
-import pyvo
 
 from hou_compact.lamost_openapi import discover_openapi_contract
+from hou_compact.lamost_tap_get import TapGetService
 
 
 TARGET_COLUMNS = (
@@ -50,13 +47,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _to_frame(result: Any) -> pd.DataFrame:
-    table = result.to_table() if hasattr(result, "to_table") else result
-    frame = table.to_pandas() if hasattr(table, "to_pandas") else pd.DataFrame(table)
-    frame.columns = [str(column).lower() for column in frame.columns]
-    return frame
-
-
 def _write(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(payload, indent=2, sort_keys=True)
@@ -66,11 +56,12 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 
 def _base_payload(args: argparse.Namespace, query: str) -> dict[str, object]:
     return {
-        "schema_version": "0.2",
+        "schema_version": "0.3",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
+        "transport": "bounded_https_get",
         "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
         "target_columns": sorted(TARGET_COLUMNS),
         "claim_boundary": _CLAIM_BOUNDARY,
@@ -86,6 +77,7 @@ def main() -> None:
         f"WHERE column_name IN ({literals})"
     )
     payload = _base_payload(args, query)
+    service: TapGetService | None = None
     try:
         contract = discover_openapi_contract(
             openapi_root=args.openapi_root,
@@ -102,8 +94,9 @@ def main() -> None:
 
         tap_url = tap_urls[0]
         payload["tap_url"] = tap_url
-        service = pyvo.dal.TAPService(tap_url)
-        frame = _to_frame(service.run_sync(query, maxrec=10_000))
+        service = TapGetService(tap_url, timeout=args.timeout)
+        frame = service.run_sync(query, maxrec=10_000)
+        frame.columns = [str(column).lower() for column in frame.columns]
         required = {"table_name", "column_name"}
         missing = sorted(required - set(frame.columns))
         if missing:
@@ -129,13 +122,20 @@ def main() -> None:
                 "matching_table_count": len(grouped),
                 "rv_scoring_table_count": len(scoring_tables),
                 "tables": grouped,
+                "transport_receipts": [
+                    receipt.to_record() for receipt in service.receipts
+                ],
                 "status": "pass" if scoring_tables else "no_scoring_table",
             }
         )
-        _write(args.output, payload)
         if not scoring_tables:
             raise RuntimeError("no TAP table exposes obsid, rv, and rv_err together")
+        _write(args.output, payload)
     except Exception as error:
+        if service is not None:
+            payload["transport_receipts"] = [
+                receipt.to_record() for receipt in service.receipts
+            ]
         payload["status"] = (
             payload["status"]
             if payload.get("status") == "no_scoring_table"
