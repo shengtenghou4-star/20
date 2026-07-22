@@ -1,0 +1,137 @@
+name: LAMOST DR8 AFGK RV header contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/lamost-afgk-header-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lamost-afgk-header-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Probe official AFGK catalogue header
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import csv
+          import gzip
+          import hashlib
+          import json
+          from urllib.error import HTTPError, URLError
+          from urllib.request import Request, urlopen
+
+          candidates = [
+              "dr8_v1.0_stellar_LRS.csv.gz",
+              "dr8_v1.0_LRS_stellar.csv.gz",
+              "dr8_v1.0_AFGK_LRS.csv.gz",
+              "dr8_v1.0_LRS_afgk.csv.gz",
+          ]
+          base = "https://www.lamost.org/dr8/v1.0/catdl?name="
+          attempts = []
+          winner = None
+
+          for name in candidates:
+              url = base + name
+              request = Request(
+                  url,
+                  headers={
+                      "User-Agent": "HOU-COMPACT/0.3 LAMOST AFGK header contract",
+                      "Accept": "application/gzip,application/octet-stream,*/*;q=0.1",
+                      "Accept-Encoding": "identity",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=180) as response:
+                      status = int(getattr(response, "status", 200))
+                      final_url = str(getattr(response, "geturl", lambda: url)())
+                      content_type = str(response.headers.get("Content-Type", ""))
+                      content_length = str(response.headers.get("Content-Length", ""))
+                      with gzip.GzipFile(fileobj=response, mode="rb") as compressed:
+                          raw_header = compressed.readline(1024 * 1024)
+                  if status != 200:
+                      raise RuntimeError(f"HTTP {status}")
+                  if not raw_header.endswith((b"\n", b"\r")):
+                      raise RuntimeError("header exceeded one MiB or was not line terminated")
+                  text = raw_header.decode("utf-8-sig", errors="strict")
+                  parsed = []
+                  for delimiter in (",", "|", "\t"):
+                      fields = next(csv.reader([text], delimiter=delimiter, strict=True))
+                      normalized = [field.strip().lower().lstrip("\ufeff") for field in fields]
+                      if len(fields) < 2 or any(not field for field in normalized):
+                          continue
+                      if len(set(normalized)) != len(normalized):
+                          continue
+                      parsed.append((len(fields), delimiter, normalized))
+                  if not parsed:
+                      raise RuntimeError("no supported delimiter produced a valid header")
+                  maximum = max(item[0] for item in parsed)
+                  winners = [item for item in parsed if item[0] == maximum]
+                  if len(winners) != 1:
+                      raise RuntimeError("ambiguous delimiter")
+                  column_count, delimiter, columns = winners[0]
+                  required = {"obsid", "gaia_source_id", "rv", "rv_err"}
+                  missing = sorted(required - set(columns))
+                  if missing:
+                      raise RuntimeError(f"missing required columns: {missing}")
+                  winner = {
+                      "filename": name,
+                      "url": url,
+                      "final_url": final_url,
+                      "http_status": status,
+                      "content_type": content_type,
+                      "content_length": content_length,
+                      "delimiter": delimiter,
+                      "column_count": column_count,
+                      "columns": columns,
+                      "raw_header_bytes": len(raw_header),
+                      "raw_header_sha256": hashlib.sha256(raw_header).hexdigest(),
+                  }
+                  attempts.append({"filename": name, "status": "accepted"})
+                  break
+              except (HTTPError, URLError, OSError, UnicodeError, csv.Error, RuntimeError) as error:
+                  attempts.append(
+                      {
+                          "filename": name,
+                          "status": "rejected",
+                          "error_type": type(error).__name__,
+                          "error": str(error)[:500],
+                      }
+                  )
+
+          payload = {
+              "schema_version": "0.1",
+              "candidate_safe": True,
+              "catalogue_role": "LAMOST DR8 LRS AFGK stellar parameters and radial velocity",
+              "attempts": attempts,
+              "accepted": winner,
+              "claim_boundary": (
+                  "This contract verifies only the official file endpoint and header fields. "
+                  "It does not inspect source rows or establish radial-velocity variability."
+              ),
+          }
+          with open("lamost_afgk_header_contract.json", "w", encoding="utf-8") as handle:
+              json.dump(payload, handle, indent=2, sort_keys=True)
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          if winner is None:
+              raise SystemExit("no official AFGK candidate satisfied the strict header contract")
+          PY
+
+      - name: Upload AFGK header contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lamost-afgk-header-contract-${{ github.run_id }}
+          path: lamost_afgk_header_contract.json
+          if-no-files-found: error
+          retention-days: 90
