@@ -25,16 +25,17 @@ jobs:
       - name: Install pipeline
         run: python -m pip install -e .
       - name: Discover official LAMOST OpenAPI and TAP metadata
-        shell: bash
         run: |
-          set -o pipefail
           mkdir -p outputs
-          python scripts/probe_lamost_openapi.py | tee outputs/lamost_openapi_contract.json
+          python scripts/probe_lamost_openapi.py \
+            --diagnostic-output outputs/lamost_openapi_diagnostic.json \
+            > outputs/lamost_openapi_contract.json
           test -s outputs/lamost_openapi_contract.json
-      - name: Upload candidate-safe metadata receipt
+      - name: Upload candidate-safe metadata receipts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: lamost-openapi-contract-${{ github.run_id }}
-          path: outputs/lamost_openapi_contract.json
+          path: outputs/
           if-no-files-found: error
           retention-days: 30
