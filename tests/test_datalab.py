@@ -8,6 +8,7 @@ import pytest
 from hou_compact.datalab import (
     DataLabQueryConfig,
     DataLabQueryError,
+    _query_url,
     build_desi_gaia_overlap_sql,
     execute_sync_csv_query,
     parse_desi_gaia_overlap_csv,
@@ -32,11 +33,31 @@ class _Response:
 
 def test_sql_uses_reverse_crossmatch_and_exact_zpix_join() -> None:
     sql = build_desi_gaia_overlap_sql([20, 10, 20])
-    assert "gaia_dr3.x1p5__gaia_source__desi_dr1__zpix AS x" in sql
+    assert "\nFROM gaia_dr3.x1p5__gaia_source__desi_dr1__zpix AS x\n" in sql
     assert "JOIN desi_dr1.zpix AS z ON x.id2 = z.id" in sql
     assert "x.id1 IN (10,20)" in sql
+    assert "match_distance_arcsecFROM" not in sql
     assert "CAST(" not in sql
     assert "z.program IN ('bright','dark')" in sql
+
+
+def test_query_url_uses_one_query_endpoint_and_async_parameter() -> None:
+    sql = "SELECT 1"
+    root_url = _query_url(
+        DataLabQueryConfig(service_url="https://datalab.noirlab.edu"),
+        sql,
+    )
+    endpoint_url = _query_url(
+        DataLabQueryConfig(service_url="https://datalab.noirlab.edu/query"),
+        sql,
+    )
+    for url in (root_url, endpoint_url):
+        parsed = urlparse(url)
+        assert parsed.path == "/query"
+        parameters = parse_qs(parsed.query, keep_blank_values=True)
+        assert parameters["sql"] == [sql]
+        assert parameters["async_"] == ["False"]
+        assert "/query/query" not in url
 
 
 def test_unsafe_program_literal_is_rejected() -> None:
