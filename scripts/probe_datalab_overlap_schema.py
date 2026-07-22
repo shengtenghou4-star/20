@@ -10,13 +10,13 @@ from hou_compact.datalab import (
     DESI_ZPIX_TABLE,
     GAIA_DESI_XMATCH_TABLE,
     DataLabQueryConfig,
-    execute_sync_csv_query,
     parse_desi_gaia_overlap_csv,
 )
+from hou_compact.datalab_query_manager import execute_query_manager_csv
 
 
 def main() -> None:
-    sql = f"""SELECT TOP 1
+    sql = f"""SELECT
     x.id1 AS source_id,
     z.targetid AS targetid,
     z.survey AS survey,
@@ -26,8 +26,9 @@ def main() -> None:
 FROM {GAIA_DESI_XMATCH_TABLE} AS x
 JOIN {DESI_ZPIX_TABLE} AS z ON x.id2 = z.id
 WHERE z.survey = 'main'
-  AND z.program IN ('bright','dark')"""
-    text, attempts = execute_sync_csv_query(
+  AND z.program IN ('bright','dark')
+LIMIT 1"""
+    text, attempts = execute_query_manager_csv(
         sql,
         config=DataLabQueryConfig(timeout_seconds=120.0, retries=2),
     )
@@ -41,6 +42,7 @@ WHERE z.survey = 'main'
         "attempts": attempts,
         "query_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
         "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "transport": "official_query_manager_nested_query_endpoint",
         "claim_boundary": (
             "No source identifiers or catalogue values are printed by this smoke test."
         ),
