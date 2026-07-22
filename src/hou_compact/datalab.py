@@ -1,9 +1,4 @@
-"""Exact Gaia DR3 to DESI DR1 zpix overlap queries through NOIRLab Data Lab.
-
-A DESI file existing in the same HEALPix cell does not prove that a Gaia source was
-observed. This module queries Data Lab's precomputed Gaia DR3↔DESI DR1 zpix
-crossmatch and returns exact DESI TARGETIDs for downstream epoch extraction.
-"""
+"""Exact Gaia DR3 to DESI DR1 zpix overlap queries through NOIRLab Data Lab."""
 
 from __future__ import annotations
 
