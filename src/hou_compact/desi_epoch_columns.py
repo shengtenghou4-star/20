@@ -64,6 +64,8 @@ def restore_single_exposure_columns(
         if len(rvtab) != len(fibermap):
             raise ValueError("RVTAB and FIBERMAP rows are not aligned")
 
+        # FITS binary tables are commonly big-endian. Explicit astype calls create
+        # native-endian NumPy arrays before pandas merge/groupby operations.
         rv_targetid = _required_column(rvtab, "TARGETID", "RVTAB").astype(np.int64)
         rv_expid = _required_column(rvtab, "EXPID", "RVTAB").astype(np.int64)
         fm_targetid = _required_column(fibermap, "TARGETID", "FIBERMAP").astype(np.int64)
@@ -77,11 +79,11 @@ def restore_single_exposure_columns(
             {
                 "targetid": rv_targetid,
                 "expid": rv_expid,
-                "mjd": _required_column(fibermap, "MJD", "FIBERMAP").astype(float),
-                "night": _required_column(fibermap, "NIGHT", "FIBERMAP"),
-                "sn_b": _required_column(rvtab, "SN_B", "RVTAB").astype(float),
-                "sn_r": _required_column(rvtab, "SN_R", "RVTAB").astype(float),
-                "sn_z": _required_column(rvtab, "SN_Z", "RVTAB").astype(float),
+                "mjd": _required_column(fibermap, "MJD", "FIBERMAP").astype(np.float64),
+                "night": _required_column(fibermap, "NIGHT", "FIBERMAP").astype(np.int64),
+                "sn_b": _required_column(rvtab, "SN_B", "RVTAB").astype(np.float64),
+                "sn_r": _required_column(rvtab, "SN_R", "RVTAB").astype(np.float64),
+                "sn_z": _required_column(rvtab, "SN_Z", "RVTAB").astype(np.float64),
             }
         )
 
