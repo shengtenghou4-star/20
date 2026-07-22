@@ -21,6 +21,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Submit bounded Gaia TAP contract query
+        id: contract
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -29,95 +31,138 @@ jobs:
           import json
           import re
           from pathlib import Path
+          from urllib.error import HTTPError, URLError
           from urllib.parse import urlencode
           from urllib.request import Request, urlopen
 
-          query_path = Path("queries/gaia_sb1_contamination_pilot_v10.adql")
-          query = query_path.read_text(encoding="utf-8")
-          bounded, count = re.subn(
-              r"SELECT\s+TOP\s+5000",
-              "SELECT TOP 1",
-              query,
-              count=1,
-              flags=re.IGNORECASE,
-          )
-          if count != 1:
-              raise RuntimeError("v10 query does not contain exactly one SELECT TOP 5000 contract")
-
-          endpoint = "https://gea.esac.esa.int/tap-server/tap/sync"
-          body = urlencode(
-              {
-                  "REQUEST": "doQuery",
-                  "LANG": "ADQL",
-                  "FORMAT": "csv",
-                  "QUERY": bounded,
-                  "MAXREC": "1",
-              }
-          ).encode("utf-8")
-          request = Request(
-              endpoint,
-              data=body,
-              headers={
-                  "Content-Type": "application/x-www-form-urlencoded",
-                  "User-Agent": "HOU-COMPACT/0.3 Gaia v10 contract",
-              },
-          )
-          with urlopen(request, timeout=600) as response:
-              status = int(getattr(response, "status", 200))
-              raw = response.read(4 * 1024 * 1024 + 1)
-              content_type = str(response.headers.get("Content-Type", ""))
-          if status != 200:
-              raise RuntimeError(f"Gaia TAP returned HTTP {status}")
-          if len(raw) > 4 * 1024 * 1024:
-              raise RuntimeError("bounded Gaia response exceeded four MiB")
-
-          text = raw.decode("utf-8-sig", errors="strict")
-          if "QUERY_STATUS" in text and "ERROR" in text[:2000]:
-              raise RuntimeError("Gaia TAP returned an error document")
-          rows = list(csv.reader(text.splitlines(), strict=True))
-          if not rows:
-              raise RuntimeError("Gaia TAP returned no CSV header")
-          columns = [value.strip().lower() for value in rows[0]]
-          required = {
-              "source_id",
-              "nss_solution_type",
-              "binary_mass_m2_lower",
-              "binary_mass_combination_method",
-              "period",
-              "semi_amplitude_primary",
-              "eccentricity",
-              "mass_flame_lower",
-          }
-          missing = sorted(required - set(columns))
-          if missing:
-              raise RuntimeError(f"Gaia v10 response is missing columns: {missing}")
-          if len(rows) > 2:
-              raise RuntimeError("MAXREC=1 response contains more than one data row")
-
+          output = Path("gaia_v10_contract.json")
           payload = {
-              "schema_version": "0.1",
+              "schema_version": "0.2",
               "candidate_safe": True,
-              "http_status": status,
-              "content_type": content_type,
-              "column_count": len(columns),
-              "data_row_count": max(0, len(rows) - 1),
-              "required_columns_present": True,
-              "sb1_mass_method_restricted": "SB1+M1" in bounded,
+              "status": "failure",
               "claim_boundary": (
                   "This contract validates query syntax and output columns only. "
                   "No source identifier or candidate value is retained or printed."
               ),
           }
-          Path("gaia_v10_contract.json").write_text(
-              json.dumps(payload, indent=2, sort_keys=True),
-              encoding="utf-8",
-          )
-          print(json.dumps(payload, indent=2, sort_keys=True))
+
+          def safe_error(value: object) -> str:
+              text = str(value)
+              text = re.sub(r"\b[0-9]{10,20}\b", "<large-integer-redacted>", text)
+              return text[:2000]
+
+          try:
+              query_path = Path("queries/gaia_sb1_contamination_pilot_v10.adql")
+              query = query_path.read_text(encoding="utf-8")
+              bounded, count = re.subn(
+                  r"SELECT\s+TOP\s+5000",
+                  "SELECT TOP 1",
+                  query,
+                  count=1,
+                  flags=re.IGNORECASE,
+              )
+              if count != 1:
+                  raise RuntimeError(
+                      "v10 query does not contain exactly one SELECT TOP 5000 contract"
+                  )
+
+              endpoint = "https://gea.esac.esa.int/tap-server/tap/sync"
+              body = urlencode(
+                  {
+                      "REQUEST": "doQuery",
+                      "LANG": "ADQL",
+                      "FORMAT": "csv",
+                      "QUERY": bounded,
+                      "MAXREC": "1",
+                  }
+              ).encode("utf-8")
+              request = Request(
+                  endpoint,
+                  data=body,
+                  headers={
+                      "Content-Type": "application/x-www-form-urlencoded",
+                      "User-Agent": "HOU-COMPACT/0.3 Gaia v10 contract",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=600) as response:
+                      status = int(getattr(response, "status", 200))
+                      raw = response.read(4 * 1024 * 1024 + 1)
+                      content_type = str(response.headers.get("Content-Type", ""))
+              except HTTPError as error:
+                  detail = error.read(65536).decode("utf-8", errors="replace")
+                  raise RuntimeError(
+                      f"Gaia TAP HTTP {error.code}: {safe_error(detail)}"
+                  ) from error
+              except URLError as error:
+                  raise RuntimeError(f"Gaia TAP transport error: {error.reason}") from error
+
+              if status != 200:
+                  raise RuntimeError(f"Gaia TAP returned HTTP {status}")
+              if len(raw) > 4 * 1024 * 1024:
+                  raise RuntimeError("bounded Gaia response exceeded four MiB")
+
+              text = raw.decode("utf-8-sig", errors="strict")
+              if "QUERY_STATUS" in text and "ERROR" in text[:2000]:
+                  raise RuntimeError(
+                      f"Gaia TAP error document: {safe_error(text[:2000])}"
+                  )
+              rows = list(csv.reader(text.splitlines(), strict=True))
+              if not rows:
+                  raise RuntimeError("Gaia TAP returned no CSV header")
+              columns = [value.strip().lower() for value in rows[0]]
+              required = {
+                  "source_id",
+                  "nss_solution_type",
+                  "binary_mass_m2_lower",
+                  "binary_mass_combination_method",
+                  "period",
+                  "semi_amplitude_primary",
+                  "eccentricity",
+                  "mass_flame_lower",
+              }
+              missing = sorted(required - set(columns))
+              if missing:
+                  raise RuntimeError(f"Gaia v10 response is missing columns: {missing}")
+              if len(rows) > 2:
+                  raise RuntimeError("MAXREC=1 response contains more than one data row")
+
+              payload.update(
+                  {
+                      "status": "success",
+                      "http_status": status,
+                      "content_type": content_type,
+                      "column_count": len(columns),
+                      "data_row_count": max(0, len(rows) - 1),
+                      "required_columns_present": True,
+                      "sb1_mass_method_restricted": "SB1+M1" in bounded,
+                  }
+              )
+          except Exception as error:
+              payload.update(
+                  {
+                      "error_type": type(error).__name__,
+                      "error": safe_error(error),
+                  }
+              )
+          finally:
+              output.write_text(
+                  json.dumps(payload, indent=2, sort_keys=True),
+                  encoding="utf-8",
+              )
+              print(json.dumps(payload, indent=2, sort_keys=True))
+
+          if payload["status"] != "success":
+              raise SystemExit(1)
           PY
       - name: Upload candidate-safe query contract
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gaia-v10-contract-${{ github.run_id }}
           path: gaia_v10_contract.json
           if-no-files-found: error
           retention-days: 30
+      - name: Preserve contract failure after artifact upload
+        if: always()
+        run: test "${{ steps.contract.outcome }}" = "success"
