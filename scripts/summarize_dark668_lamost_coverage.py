@@ -33,10 +33,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _read_raw_epochs(path: Path) -> pd.DataFrame:
+    try:
+        epochs = pd.read_csv(path, dtype={"source_id": "string"})
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=["source_id", "mjd", "vrad"])
+    if "vrad" not in epochs.columns and "vrad_list_kms" in epochs.columns:
+        epochs = epochs.copy()
+        epochs["vrad"] = epochs["vrad_list_kms"]
+    required = {"source_id", "mjd", "vrad"}
+    missing = sorted(required - set(epochs.columns))
+    if missing:
+        raise KeyError(f"epoch input is missing coverage columns: {missing}")
+    return epochs
+
+
 def main() -> None:
     args = parse_args()
     candidates = pd.read_csv(args.candidates, dtype={"source_id": "string"})
-    epochs = pd.read_csv(args.epochs, dtype={"source_id": "string"})
+    epochs = _read_raw_epochs(args.epochs)
     coverage = summarize_period_coverage(candidates, epochs)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     coverage.to_csv(args.output, index=False)
