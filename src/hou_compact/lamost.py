@@ -2,7 +2,7 @@
 
 The initial contract targets the LAMOST DR8 v1.0 low-resolution multiple-epoch
 catalogue because its ``gaia_source_id`` is explicitly documented as a Gaia DR2
-identifier.  Identifiers are parsed from text without floating-point conversion.
+identifier. Identifiers are parsed from text without floating-point conversion.
 Rows are measurements only until an exact per-spectrum ``obsid`` join supplies a
 finite positive radial-velocity uncertainty and passes the frozen quality gates.
 """
@@ -19,7 +19,6 @@ import pandas as pd
 
 _INT_TEXT = re.compile(r"^[+]?[0-9]+(?:[.]0+)?$")
 _FLOAT_TEXT = re.compile(r"^[+]?(?:[0-9]+(?:[.][0-9]*)?|[.][0-9]+)$")
-_MISSING_TOKENS = frozenset({"", "nan", "null", "none", "--", "-9999", "-9999.0"})
 _UTC_OFFSET_DAYS = 8.0 / 24.0
 
 
@@ -62,14 +61,17 @@ def parse_exact_int_list(value: object, *, name: str) -> list[int]:
     pieces = text.split("-")
     if any(piece.strip() == "" for piece in pieces):
         raise LamostContractError(f"{name} contains an empty integer token")
-    return [parse_exact_int_text(piece, name=f"{name}[{index}]") for index, piece in enumerate(pieces)]
+    return [
+        parse_exact_int_text(piece, name=f"{name}[{index}]")
+        for index, piece in enumerate(pieces)
+    ]
 
 
 def parse_hyphen_numeric_list(value: object, *, name: str) -> list[float]:
     """Parse LAMOST's hyphen-joined numeric lists, including negative values.
 
     Joining values with ``-`` represents a negative following value with a doubled
-    hyphen.  For example, ``12.0--8.5-3.0`` becomes ``[12.0, -8.5, 3.0]``.
+    hyphen. For example, ``12.0--8.5-3.0`` becomes ``[12.0, -8.5, 3.0]``.
     Exponent notation is rejected because its sign would be ambiguous with the
     catalogue delimiter.
     """
@@ -83,7 +85,9 @@ def parse_hyphen_numeric_list(value: object, *, name: str) -> list[float]:
         token = piece.strip()
         if token == "":
             if negative_next:
-                raise LamostContractError(f"{name} contains ambiguous consecutive signs")
+                raise LamostContractError(
+                    f"{name} contains ambiguous consecutive signs"
+                )
             negative_next = True
             continue
         lowered = token.lower()
@@ -107,11 +111,14 @@ def parse_hyphen_numeric_list(value: object, *, name: str) -> list[float]:
 def lamost_lmjm_to_utc_mjd(lmjm: int | np.integer) -> float:
     """Convert LAMOST local modified Julian minute to continuous UTC MJD.
 
-    LAMOST records local time at UTC+8.  Dividing LMJM by 1440 gives the local
-    MJD-like minute count; subtracting 8/24 day returns UTC MJD.  This relation is
+    LAMOST records local time at UTC+8. Dividing LMJM by 1440 gives the local
+    MJD-like minute count; subtracting 8/24 day returns UTC MJD. This relation is
     verified against official header examples containing LMJM and DATE-BEG.
     """
-    if isinstance(lmjm, (bool, np.bool_)) or not isinstance(lmjm, (int, np.integer)):
+    if isinstance(lmjm, (bool, np.bool_)) or not isinstance(
+        lmjm,
+        (int, np.integer),
+    ):
         raise TypeError("lmjm must be an integer")
     if int(lmjm) <= 0:
         raise LamostContractError("lmjm must be positive")
@@ -154,7 +161,9 @@ def _rv_status(value: float) -> str:
     return "measured_without_uncertainty"
 
 
-def explode_lrs_multiple_epoch_row(row: Mapping[str, object]) -> pd.DataFrame:
+def explode_lrs_multiple_epoch_row(
+    row: Mapping[str, object],
+) -> pd.DataFrame:
     """Explode one DR8 v1.0 LRS multiple-epoch row with strict list alignment."""
     required = {
         "source_id",
@@ -172,7 +181,10 @@ def explode_lrs_multiple_epoch_row(row: Mapping[str, object]) -> pd.DataFrame:
         row["gaia_source_id"],
         name="gaia_source_id",
     )
-    observation_count = parse_exact_int_text(row["obs_number"], name="obs_number")
+    observation_count = parse_exact_int_text(
+        row["obs_number"],
+        name="obs_number",
+    )
     if observation_count < 2:
         raise LamostContractError("multiple-epoch row must have obs_number >= 2")
     obsids = parse_exact_int_list(row["obsid_list"], name="obsid_list")
@@ -210,7 +222,9 @@ def explode_lrs_multiple_epoch_row(row: Mapping[str, object]) -> pd.DataFrame:
     return pd.DataFrame.from_records(records)
 
 
-def explode_lrs_multiple_epoch_catalog(rows: Iterable[Mapping[str, object]]) -> pd.DataFrame:
+def explode_lrs_multiple_epoch_catalog(
+    rows: Iterable[Mapping[str, object]],
+) -> pd.DataFrame:
     """Explode multiple catalogue rows and return deterministic epoch ordering."""
     frames = [explode_lrs_multiple_epoch_row(row) for row in rows]
     if not frames:
@@ -236,13 +250,22 @@ def join_lrs_spectrum_uncertainties(
     """Join per-spectrum RV uncertainties by exact obsid and audit RV agreement.
 
     The per-spectrum table must be loaded with identifier columns as text before
-    normalization.  Its `rv` and `rv_err` values are used for scoring only when the
+    normalization. Its `rv` and `rv_err` values are used for scoring only when the
     exact obsid is unique, the uncertainty is finite and positive, and the spectrum
     RV agrees with the multiple-epoch list within the frozen tolerance.
     """
-    if not math.isfinite(maximum_rv_difference_kms) or maximum_rv_difference_kms < 0:
+    invalid_tolerance = (
+        not math.isfinite(maximum_rv_difference_kms)
+        or maximum_rv_difference_kms < 0
+    )
+    if invalid_tolerance:
         raise ValueError("maximum_rv_difference_kms must be finite and non-negative")
-    required_epochs = {"dr2_source_id", "obsid", "vrad_list_kms", "rv_list_status"}
+    required_epochs = {
+        "dr2_source_id",
+        "obsid",
+        "vrad_list_kms",
+        "rv_list_status",
+    }
     required_spectra = {"obsid", "rv", "rv_err"}
     missing_epochs = sorted(required_epochs - set(epochs.columns))
     missing_spectra = sorted(required_spectra - set(spectra.columns))
@@ -253,13 +276,18 @@ def join_lrs_spectrum_uncertainties(
 
     spectrum = spectra.copy()
     spectrum["obsid"] = [
-        parse_exact_int_text(value, name="spectrum.obsid") for value in spectrum["obsid"]
+        parse_exact_int_text(value, name="spectrum.obsid")
+        for value in spectrum["obsid"]
     ]
     if spectrum["obsid"].duplicated().any():
         raise LamostContractError("per-spectrum table contains duplicate obsid rows")
-    spectrum["catalog_vrad_kms"] = pd.to_numeric(spectrum["rv"], errors="coerce")
+    spectrum["catalog_vrad_kms"] = pd.to_numeric(
+        spectrum["rv"],
+        errors="coerce",
+    )
     spectrum["catalog_vrad_err_kms"] = pd.to_numeric(
-        spectrum["rv_err"], errors="coerce"
+        spectrum["rv_err"],
+        errors="coerce",
     )
     optional = [
         column
@@ -286,9 +314,8 @@ def join_lrs_spectrum_uncertainties(
     joined.loc[has_spectrum & ~finite_error, "lamost_epoch_status"] = (
         "missing_or_nonfinite_rv_uncertainty"
     )
-    joined.loc[has_spectrum & finite_error & ~positive_error, "lamost_epoch_status"] = (
-        "nonpositive_rv_uncertainty"
-    )
+    nonpositive = has_spectrum & finite_error & ~positive_error
+    joined.loc[nonpositive, "lamost_epoch_status"] = "nonpositive_rv_uncertainty"
     joined.loc[
         has_spectrum & finite_error & positive_error & ~measured,
         "lamost_epoch_status",
