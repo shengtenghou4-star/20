@@ -29,9 +29,12 @@ jobs:
       - name: Verify first-party LAMOST DR8 catalogue contract
         run: python scripts/probe_lamost_tap_schema.py
       - name: Discover official LAMOST OpenAPI and TAP metadata
+        shell: bash
         run: |
+          set -o pipefail
           mkdir -p outputs
           python scripts/probe_lamost_openapi.py | tee outputs/lamost_openapi_contract.json
+          test -s outputs/lamost_openapi_contract.json
       - name: Upload candidate-safe metadata receipt
         uses: actions/upload-artifact@v4
         with:
