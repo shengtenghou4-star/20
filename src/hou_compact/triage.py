@@ -72,6 +72,25 @@ def _integer(row: Mapping[str, object], key: str) -> int | None:
     return result
 
 
+def _result(
+    *,
+    stage: str,
+    rank: int,
+    passed: list[str],
+    blockers: list[str],
+    cautions: list[str],
+    set_bits: tuple[int, ...],
+) -> dict[str, object]:
+    return {
+        "triage_stage": stage,
+        "triage_rank": rank,
+        "passed_gates": ";".join(passed),
+        "blockers": ";".join(blockers),
+        "cautions": ";".join(cautions),
+        "gaia_set_flag_bits": ",".join(map(str, set_bits)),
+    }
+
+
 def triage_followup(
     row: Mapping[str, object],
     config: TriageConfig = TriageConfig(),
@@ -106,14 +125,14 @@ def triage_followup(
             cautions.append("gaia_caution_flag_bits=" + ",".join(map(str, caution)))
 
     if blockers:
-        return {
-            "triage_stage": "gaia_quality_hold",
-            "triage_rank": 0,
-            "passed_gates": "",
-            "blockers": ";".join(blockers),
-            "cautions": ";".join(cautions),
-            "gaia_set_flag_bits": ",".join(map(str, set_bits)),
-        }
+        return _result(
+            stage="gaia_quality_hold",
+            rank=0,
+            passed=[],
+            blockers=blockers,
+            cautions=cautions,
+            set_bits=set_bits,
+        )
     passed.append("gaia_quality")
 
     orbit_status = str(row.get("orbit_status", row.get("status", "")))
@@ -134,14 +153,14 @@ def triage_followup(
         blockers.append("fixed_gaia_orbit_absolute_fit_poor_or_missing")
 
     if blockers:
-        return {
-            "triage_stage": "desi_orbit_hold",
-            "triage_rank": 1,
-            "passed_gates": ";".join(passed),
-            "blockers": ";".join(blockers),
-            "cautions": ";".join(cautions),
-            "gaia_set_flag_bits": ",".join(map(str, set_bits)),
-        }
+        return _result(
+            stage="desi_orbit_hold",
+            rank=1,
+            passed=passed,
+            blockers=blockers,
+            cautions=cautions,
+            set_bits=set_bits,
+        )
     passed.append("independent_orbit_support")
 
     primary_status = str(row.get("primary_status", ""))
@@ -162,36 +181,63 @@ def triage_followup(
         blockers.append("minimum_mass_quantiles_missing")
 
     if blockers:
-        return {
-            "triage_stage": "mass_inference_hold",
-            "triage_rank": 2,
-            "passed_gates": ";".join(passed),
-            "blockers": ";".join(blockers),
-            "cautions": ";".join(cautions),
-            "gaia_set_flag_bits": ",".join(map(str, set_bits)),
-        }
+        return _result(
+            stage="mass_inference_hold",
+            rank=2,
+            passed=passed,
+            blockers=blockers,
+            cautions=cautions,
+            set_bits=set_bits,
+        )
     passed.append("mass_inference_ready")
+
+    high_risk_count = _integer(row, "gaia_contamination_high_risk_count")
+    caution_count = _integer(row, "gaia_contamination_caution_count")
+    context_count = _integer(row, "gaia_contamination_context_count")
+    if high_risk_count is None:
+        blockers.append("gaia_contamination_audit_missing")
+    elif high_risk_count > 0:
+        blockers.append(f"gaia_high_risk_contamination_signal_count={high_risk_count}")
+    if caution_count is None:
+        cautions.append("gaia_contamination_caution_count_missing")
+    elif caution_count > 0:
+        cautions.append(f"gaia_contamination_caution_signal_count={caution_count}")
+    if context_count is None:
+        cautions.append("gaia_contamination_context_count_missing")
+    elif context_count > 0:
+        cautions.append(f"gaia_nss_context_signal_count={context_count}")
+
+    if blockers:
+        return _result(
+            stage="contamination_resolution_hold",
+            rank=3,
+            passed=passed,
+            blockers=blockers,
+            cautions=cautions,
+            set_bits=set_bits,
+        )
+    passed.append("no_high_risk_gaia_contamination_signal")
 
     assert minimum_q16 is not None
     if minimum_q16 >= config.very_high_minimum_mass_q16_solar:
         stage = "very_high_minimum_mass_followup"
-        rank = 5
+        rank = 6
         passed.append("minimum_mass_q16_above_very_high_gate")
     elif minimum_q16 >= config.high_minimum_mass_q16_solar:
         stage = "high_minimum_mass_followup"
-        rank = 4
+        rank = 5
         passed.append("minimum_mass_q16_above_high_gate")
     else:
         stage = "orbit_supported_lower_mass"
-        rank = 3
+        rank = 4
         passed.append("minimum_mass_below_high_gate")
 
-    cautions.append("no_luminous_secondary_or_hierarchy_rejection_yet")
-    return {
-        "triage_stage": stage,
-        "triage_rank": rank,
-        "passed_gates": ";".join(passed),
-        "blockers": "",
-        "cautions": ";".join(cautions),
-        "gaia_set_flag_bits": ",".join(map(str, set_bits)),
-    }
+    cautions.append("no_spectral_sed_or_hierarchy_rejection_yet")
+    return _result(
+        stage=stage,
+        rank=rank,
+        passed=passed,
+        blockers=[],
+        cautions=cautions,
+        set_bits=set_bits,
+    )

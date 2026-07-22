@@ -17,6 +17,9 @@ def _good_row() -> dict[str, object]:
         "mass_status": "scored",
         "minimum_m2_q16_solar": 3.5,
         "minimum_m2_q50_solar": 4.0,
+        "gaia_contamination_high_risk_count": 0,
+        "gaia_contamination_caution_count": 0,
+        "gaia_contamination_context_count": 0,
     }
 
 
@@ -62,6 +65,35 @@ def test_large_median_does_not_override_low_q16() -> None:
     row["minimum_m2_q50_solar"] = 8.0
     result = triage_followup(row)
     assert result["triage_stage"] == "orbit_supported_lower_mass"
+
+
+def test_high_risk_contamination_blocks_mass_followup_rank() -> None:
+    row = _good_row()
+    row["gaia_contamination_high_risk_count"] = 2
+    row["gaia_contamination_caution_count"] = 1
+    result = triage_followup(row)
+    assert result["triage_stage"] == "contamination_resolution_hold"
+    assert result["triage_rank"] == 3
+    assert "gaia_high_risk_contamination_signal_count=2" in result["blockers"]
+    assert "gaia_contamination_caution_signal_count=1" in result["cautions"]
+
+
+def test_missing_contamination_audit_fails_closed() -> None:
+    row = _good_row()
+    del row["gaia_contamination_high_risk_count"]
+    result = triage_followup(row)
+    assert result["triage_stage"] == "contamination_resolution_hold"
+    assert "gaia_contamination_audit_missing" in result["blockers"]
+
+
+def test_caution_and_context_signals_do_not_block() -> None:
+    row = _good_row()
+    row["gaia_contamination_caution_count"] = 2
+    row["gaia_contamination_context_count"] = 1
+    result = triage_followup(row)
+    assert result["triage_stage"] == "very_high_minimum_mass_followup"
+    assert "gaia_contamination_caution_signal_count=2" in result["cautions"]
+    assert "gaia_nss_context_signal_count=1" in result["cautions"]
 
 
 def test_threshold_configuration_is_validated() -> None:
