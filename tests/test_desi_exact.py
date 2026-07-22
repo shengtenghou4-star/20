@@ -5,7 +5,10 @@ import pandas as pd
 import pytest
 from astropy.io import fits
 
-from hou_compact.desi_exact import extract_single_epoch_rows_by_targetid
+from hou_compact.desi_exact import (
+    extract_single_epoch_rows_by_dr2_refid,
+    extract_single_epoch_rows_by_targetid,
+)
 
 
 def _write_exact_file(path: Path, *, mismatch: bool = False) -> None:
@@ -27,9 +30,9 @@ def _write_exact_file(path: Path, *, mismatch: bool = False) -> None:
     )
     fibermap = np.array(
         [
-            (404 if mismatch else 101, 1, 0, 111, "G3"),
-            (202, 2, 0, 222, "G3"),
-            (999, 3, 0, 333, "G3"),
+            (404 if mismatch else 101, 1, 0, 111, "G2"),
+            (202, 2, 0, 222, "G2"),
+            (999, 3, 0, 333, "T2"),
         ],
         dtype=[
             ("TARGETID", "i8"),
@@ -83,6 +86,63 @@ def test_exact_targetid_mapping_extracts_only_official_matches(tmp_path: Path) -
     assert rows["vrad"].tolist() == [12.0, -8.0]
 
 
+def test_dr2_bridge_refid_mapping_recovers_exact_rows(tmp_path: Path) -> None:
+    path = tmp_path / "rvtab_spectra-main-bright-10.fits"
+    _write_exact_file(path)
+    bridge = pd.DataFrame(
+        {
+            "source_id": [1001, 2002, 3003],
+            "dr2_source_id": [111, 222, 333],
+            "dr2_bridge_status": [
+                "accepted_unique_or_separated_nearest",
+                "accepted_unique_or_separated_nearest",
+                "accepted_unique_or_separated_nearest",
+            ],
+            "dr2_angular_distance_mas": [2.0, 4.0, 1.0],
+            "dr2_neighbour_count": [1, 2, 1],
+            "dr2_distance_margin_mas": [np.inf, 12.0, np.inf],
+        }
+    )
+    rows = extract_single_epoch_rows_by_dr2_refid(
+        path,
+        bridge,
+        survey="main",
+        program="bright",
+        healpix=10,
+    )
+    assert rows["source_id"].tolist() == [1001, 2002]
+    assert rows["targetid"].tolist() == [101, 202]
+    assert rows["desi_ref_id"].tolist() == [111, 222]
+    assert rows["source_match_mode"].unique().tolist() == [
+        "gaia_dr3_dr2_neighbourhood_ref_id"
+    ]
+    assert rows["source_match_separation_arcsec"].tolist() == [0.002, 0.004]
+    assert rows["dr2_neighbour_count"].tolist() == [1, 2]
+
+
+def test_rejected_dr2_bridge_rows_are_not_used(tmp_path: Path) -> None:
+    path = tmp_path / "rvtab_spectra-main-dark-10.fits"
+    _write_exact_file(path)
+    bridge = pd.DataFrame(
+        {
+            "source_id": [1001],
+            "dr2_source_id": [111],
+            "dr2_bridge_status": ["rejected_ambiguous_nearest"],
+            "dr2_angular_distance_mas": [2.0],
+            "dr2_neighbour_count": [2],
+            "dr2_distance_margin_mas": [1.0],
+        }
+    )
+    rows = extract_single_epoch_rows_by_dr2_refid(
+        path,
+        bridge,
+        survey="main",
+        program="dark",
+        healpix=10,
+    )
+    assert rows.empty
+
+
 def test_exact_target_conflict_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "rvtab_spectra-main-dark-10.fits"
     _write_exact_file(path)
@@ -97,6 +157,32 @@ def test_exact_target_conflict_fails_closed(tmp_path: Path) -> None:
         extract_single_epoch_rows_by_targetid(
             path,
             mapping,
+            survey="main",
+            program="dark",
+            healpix=10,
+        )
+
+
+def test_dr2_bridge_conflict_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "rvtab_spectra-main-dark-10.fits"
+    _write_exact_file(path)
+    bridge = pd.DataFrame(
+        {
+            "source_id": [1001, 2002],
+            "dr2_source_id": [111, 111],
+            "dr2_bridge_status": [
+                "accepted_unique_or_separated_nearest",
+                "accepted_unique_or_separated_nearest",
+            ],
+            "dr2_angular_distance_mas": [2.0, 3.0],
+            "dr2_neighbour_count": [1, 1],
+            "dr2_distance_margin_mas": [np.inf, np.inf],
+        }
+    )
+    with pytest.raises(ValueError, match="multiple DR3 sources"):
+        extract_single_epoch_rows_by_dr2_refid(
+            path,
+            bridge,
             survey="main",
             program="dark",
             healpix=10,
