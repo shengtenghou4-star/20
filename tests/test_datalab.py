@@ -41,7 +41,7 @@ def test_sql_uses_reverse_crossmatch_and_exact_zpix_join() -> None:
     assert "z.program IN ('bright','dark')" in sql
 
 
-def test_query_url_uses_one_query_endpoint_and_async_parameter() -> None:
+def test_query_url_uses_official_endpoint_and_parameters() -> None:
     sql = "SELECT 1"
     root_url = _query_url(
         DataLabQueryConfig(service_url="https://datalab.noirlab.edu"),
@@ -56,7 +56,9 @@ def test_query_url_uses_one_query_endpoint_and_async_parameter() -> None:
         assert parsed.path == "/query"
         parameters = parse_qs(parsed.query, keep_blank_values=True)
         assert parameters["sql"] == [sql]
-        assert parameters["async_"] == ["False"]
+        assert parameters["async"] == ["False"]
+        assert parameters["drop"] == ["False"]
+        assert "async_" not in parameters
         assert "/query/query" not in url
 
 
