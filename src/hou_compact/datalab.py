@@ -147,7 +147,8 @@ def _query_url(config: DataLabQueryConfig, sql: str) -> str:
             "sql": sql,
             "ofmt": "csv",
             "out": "",
-            "async_": "False",
+            "async": "False",
+            "drop": "False",
             "profile": config.profile,
         }
     )
