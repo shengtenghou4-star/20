@@ -1,0 +1,41 @@
+name: dark668-lamost-tap-schema
+
+on:
+  pull_request:
+    paths:
+      - "scripts/probe_lamost_tap_rv_schema.py"
+      - "src/hou_compact/lamost_openapi.py"
+      - ".github/workflows/dark668-lamost-tap-schema.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-lamost-tap-schema-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover-rv-tables:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e .
+      - name: Discover first-party TAP RV schema
+        run: |
+          python scripts/probe_lamost_tap_rv_schema.py \
+            --output outputs/lamost_tap_rv_schema.json
+      - name: Upload candidate-safe schema receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-lamost-tap-schema-${{ github.run_id }}
+          path: outputs/lamost_tap_rv_schema.json
+          if-no-files-found: warn
+          retention-days: 30
