@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,14 @@ from hou_compact.dark668_dynamics import (
     score_dynamical_consistency,
 )
 from hou_compact.gaia import sha256_file
+
+_FIT_COLUMNS = (
+    "period_days",
+    "semi_amplitude_kms",
+    "eccentricity",
+    "delta_bic_circular_minus_keplerian",
+    "reduced_chi2",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +47,20 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _normalize_zero_result_schema(kepler_scores: pd.DataFrame) -> pd.DataFrame:
+    if "status" not in kepler_scores.columns:
+        raise KeyError("kepler score input has no status column")
+    missing = [column for column in _FIT_COLUMNS if column not in kepler_scores.columns]
+    if not missing:
+        return kepler_scores
+    if kepler_scores["status"].eq("scored").any():
+        raise KeyError(f"scored Kepler rows are missing fit columns: {missing}")
+    normalized = kepler_scores.copy()
+    for column in missing:
+        normalized[column] = math.nan
+    return normalized
+
+
 def main() -> None:
     args = parse_args()
     candidates = pd.read_csv(args.candidates, dtype={"source_id": "string"})
@@ -45,6 +68,7 @@ def main() -> None:
         args.kepler_scores,
         dtype={"source_id": "string"},
     )
+    kepler_scores = _normalize_zero_result_schema(kepler_scores)
     config = DynamicalAuditConfig(
         minimum_kepler_delta_bic=args.minimum_kepler_delta_bic,
         maximum_reduced_chi2=args.maximum_reduced_chi2,
@@ -56,7 +80,7 @@ def main() -> None:
     scores.to_csv(args.output, index=False)
 
     payload = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "candidate_input_sha256": sha256_file(args.candidates),
         "kepler_input_sha256": sha256_file(args.kepler_scores),
@@ -66,6 +90,10 @@ def main() -> None:
         "source_level_output_path": str(args.output),
         "public_commit_policy": (
             "Never commit or upload the plaintext source-level dynamical audit."
+        ),
+        "zero_result_policy": (
+            "A Kepler table with no scored rows is a valid zero-result input; missing "
+            "fit-only columns are padded with null values rather than treated as failure."
         ),
         "interpretation_boundary": (
             "The SB1 mass function and edge-on minimum mass are physical follow-up "
