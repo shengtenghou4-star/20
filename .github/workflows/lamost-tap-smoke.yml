@@ -5,12 +5,12 @@ on:
     paths:
       - "src/hou_compact/lamost.py"
       - "src/hou_compact/lamost_openapi.py"
-      - "src/hou_compact/lamost_tap.py"
+      - "src/hou_compact/lamost_sql.py"
       - "scripts/probe_lamost_tap_schema.py"
       - "scripts/probe_lamost_openapi.py"
-      - "scripts/probe_lamost_tap_contract.py"
+      - "scripts/probe_lamost_sql_protocol.py"
       - "tests/test_lamost_openapi.py"
-      - "tests/test_lamost_tap.py"
+      - "tests/test_lamost_sql.py"
       - ".github/workflows/lamost-tap-smoke.yml"
   workflow_dispatch:
 
@@ -38,13 +38,13 @@ jobs:
             --diagnostic-output outputs/lamost_openapi_diagnostic.json \
             > outputs/lamost_openapi_contract.json
           test -s outputs/lamost_openapi_contract.json
-      - name: Verify multiple-epoch columns through official TAP_SCHEMA
+      - name: Verify public SQL transport with constant query
         run: |
-          python scripts/probe_lamost_tap_contract.py \
-            --output outputs/lamost_tap_contract.json \
-            > outputs/lamost_tap_contract.stdout.json
-          test -s outputs/lamost_tap_contract.json
-      - name: Upload candidate-safe metadata receipts
+          python scripts/probe_lamost_sql_protocol.py \
+            --output outputs/lamost_sql_protocol.json \
+            > outputs/lamost_sql_protocol.stdout.json
+          test -s outputs/lamost_sql_protocol.json
+      - name: Upload candidate-safe access receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
