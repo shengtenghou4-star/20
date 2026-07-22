@@ -16,7 +16,8 @@ from hou_compact.lamost import (
 
 def test_large_gaia_id_parses_exactly_from_text() -> None:
     value = "6012345678901234567.0"
-    assert parse_exact_int_text(value, name="gaia_source_id") == 6_012_345_678_901_234_567
+    parsed = parse_exact_int_text(value, name="gaia_source_id")
+    assert parsed == 6_012_345_678_901_234_567
 
 
 def test_float_identifier_is_rejected_as_potentially_lossy() -> None:
@@ -82,7 +83,10 @@ def test_catalog_rejects_duplicate_source_obsid() -> None:
         "midmjm_list": "83764590-83766030",
         "rv_list": "12.0-13.0",
     }
-    with pytest.raises(LamostContractError, match="duplicate DR2-source/obsid"):
+    with pytest.raises(
+        LamostContractError,
+        match="duplicate DR2-source/obsid",
+    ):
         explode_lrs_multiple_epoch_catalog([row, row])
 
 
