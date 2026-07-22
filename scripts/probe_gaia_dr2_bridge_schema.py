@@ -21,6 +21,7 @@ def main() -> None:
             "    d.magnitude_difference AS magnitude_difference_mag,",
             "    d.proper_motion_propagation AS proper_motion_propagation",
             "FROM gaiadr3.dr2_neighbourhood AS d",
+            "ORDER BY d.dr3_source_id, d.angular_distance, d.dr2_source_id",
         ]
     )
     table = pyvo.dal.TAPService(DEFAULT_GAIA_TAP_URL).run_sync(
@@ -44,6 +45,7 @@ def main() -> None:
         "rows": len(table),
         "columns": sorted(columns),
         "query_sha256": hashlib.sha256(adql.encode("utf-8")).hexdigest(),
+        "server_ordering": "plain_columns_only",
         "claim_boundary": (
             "No Gaia source identifiers or catalogue values are printed by this smoke test."
         ),
