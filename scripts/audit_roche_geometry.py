@@ -57,6 +57,19 @@ def _finite(row: pd.Series, name: str) -> float:
     return value
 
 
+def _eccentricity_inputs(row: pd.Series) -> tuple[float, float, str]:
+    solution_type = str(row["nss_solution_type"]).strip().upper()
+    eccentricity = pd.to_numeric(pd.Series([row["eccentricity"]]), errors="coerce").iloc[0]
+    error = pd.to_numeric(pd.Series([row["eccentricity_error"]]), errors="coerce").iloc[0]
+    if np.isfinite(eccentricity) and np.isfinite(error):
+        return float(eccentricity), float(error), "published_eccentric_solution"
+    if "SB1C" in solution_type and not np.isfinite(eccentricity) and not np.isfinite(error):
+        return 0.0, 0.0, "gaia_sb1c_circular_convention"
+    raise ValueError(
+        "missing eccentricity inputs outside the Gaia SB1C circular convention"
+    )
+
+
 def main() -> None:
     args = parse_args()
     if args.max_rows is not None and args.max_rows < 1:
@@ -71,6 +84,7 @@ def main() -> None:
         _require_unique(frame, name)
 
     gaia_columns = _KEY + [
+        "nss_solution_type",
         "period",
         "period_error",
         "eccentricity",
@@ -124,12 +138,14 @@ def main() -> None:
             "solution_id": int(row["solution_id"]),
             "status": "input_error",
             "error": "",
+            "eccentricity_input_mode": "",
         }
         try:
             if row.get("primary_status") not in {"scored", "weak_prior"}:
                 raise ValueError("primary-mass product is not scored")
             if row.get("mass_status") != "scored":
                 raise ValueError("companion-mass product is not scored")
+            eccentricity, eccentricity_error, eccentricity_mode = _eccentricity_inputs(row)
             seed = deterministic_roche_seed(
                 int(row["source_id"]),
                 int(row["solution_id"]),
@@ -138,8 +154,8 @@ def main() -> None:
             posterior = infer_roche_geometry_posterior(
                 period_days=_finite(row, "period"),
                 period_error_days=_finite(row, "period_error"),
-                eccentricity=_finite(row, "eccentricity"),
-                eccentricity_error=_finite(row, "eccentricity_error"),
+                eccentricity=eccentricity,
+                eccentricity_error=eccentricity_error,
                 primary_mass_q16_solar=_finite(row, "primary_mass_q16_solar"),
                 primary_mass_q50_solar=_finite(row, "primary_mass_q50_solar"),
                 primary_mass_q84_solar=_finite(row, "primary_mass_q84_solar"),
@@ -154,6 +170,7 @@ def main() -> None:
             )
             record.update(posterior.to_record())
             record["random_seed"] = seed
+            record["eccentricity_input_mode"] = eccentricity_mode
         except (TypeError, ValueError, RuntimeError, KeyError) as error:
             record["error"] = f"{type(error).__name__}: {error}"
         records.append(record)
@@ -165,6 +182,11 @@ def main() -> None:
     status_counts = {
         str(key): int(value) for key, value in output["status"].value_counts().items()
     }
+    eccentricity_mode_counts = {
+        str(key): int(value)
+        for key, value in output["eccentricity_input_mode"].value_counts().items()
+        if str(key)
+    }
     manifest = {
         "gaia": {"path": str(args.gaia), "sha256": sha256_file(args.gaia)},
         "primary": {"path": str(args.primary), "sha256": sha256_file(args.primary)},
@@ -173,6 +195,7 @@ def main() -> None:
         "output_sha256": sha256_file(args.output),
         "output_rows": len(output),
         "status_counts": status_counts,
+        "eccentricity_input_mode_counts": eccentricity_mode_counts,
         "settings": {
             "max_rows": args.max_rows,
             "n_draws": args.n_draws,
