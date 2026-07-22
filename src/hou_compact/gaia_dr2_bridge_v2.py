@@ -1,14 +1,16 @@
-"""TAP-compatible Gaia DR3-to-DR2 bridge retrieval.
+"""TAP-compatible Gaia DR3-to-DR2 bridge retrieval and audit.
 
 Gaia's TAP parser rejects scalar expressions such as ``ABS(...)`` in this
-``ORDER BY`` context.  The server query therefore orders only by plain columns;
+``ORDER BY`` context. The server query therefore orders only by plain columns;
 HOU-COMPACT applies the absolute-magnitude tie-break deterministically after the
-complete bounded response has been validated.
+complete bounded response has been validated and preserves that rule during the
+one-row-per-source ambiguity audit.
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable, Iterable
 
 import pandas as pd
@@ -28,6 +30,17 @@ _EXPECTED_COLUMNS = (
     "angular_distance_mas",
     "magnitude_difference_mag",
     "proper_motion_propagation",
+)
+_AUDITED_COLUMNS = (
+    "source_id",
+    "dr2_source_id",
+    "dr2_bridge_status",
+    "dr2_neighbour_count",
+    "dr2_angular_distance_mas",
+    "dr2_second_distance_mas",
+    "dr2_distance_margin_mas",
+    "dr2_magnitude_difference_mag",
+    "dr2_proper_motion_propagation",
 )
 
 
@@ -130,3 +143,79 @@ def query_gaia_dr2_neighbourhood_v2(
         else pd.DataFrame(columns=_EXPECTED_COLUMNS)
     )
     return _client_order(output), receipts
+
+
+def audit_gaia_dr2_bridge_v2(
+    neighbours: pd.DataFrame,
+    *,
+    maximum_nearest_distance_mas: float = 1000.0,
+    minimum_distance_margin_mas: float = 5.0,
+) -> pd.DataFrame:
+    """Select a release bridge while preserving absolute-magnitude tie-breaking."""
+    if (
+        not math.isfinite(maximum_nearest_distance_mas)
+        or maximum_nearest_distance_mas <= 0
+    ):
+        raise ValueError(
+            "maximum_nearest_distance_mas must be finite and positive"
+        )
+    if (
+        not math.isfinite(minimum_distance_margin_mas)
+        or minimum_distance_margin_mas < 0
+    ):
+        raise ValueError(
+            "minimum_distance_margin_mas must be finite and non-negative"
+        )
+    requested = set(
+        pd.to_numeric(neighbours["dr3_source_id"], errors="raise").astype(
+            "int64"
+        )
+    )
+    frame = _validate_batch(neighbours, requested)
+    if frame.empty:
+        return pd.DataFrame(columns=_AUDITED_COLUMNS)
+
+    records: list[dict[str, object]] = []
+    for dr3_source_id, group in frame.groupby("dr3_source_id", sort=True):
+        ordered = _client_order(group).reset_index(drop=True)
+        nearest = ordered.iloc[0]
+        neighbour_count = len(ordered)
+        second_distance = (
+            float(ordered.iloc[1]["angular_distance_mas"])
+            if neighbour_count > 1
+            else float("nan")
+        )
+        margin = (
+            second_distance - float(nearest["angular_distance_mas"])
+            if neighbour_count > 1
+            else float("inf")
+        )
+        status = "accepted_unique_or_separated_nearest"
+        if float(nearest["angular_distance_mas"]) > maximum_nearest_distance_mas:
+            status = "rejected_nearest_too_distant"
+        elif neighbour_count > 1 and margin < minimum_distance_margin_mas:
+            status = "rejected_ambiguous_nearest"
+        records.append(
+            {
+                "source_id": int(dr3_source_id),
+                "dr2_source_id": int(nearest["dr2_source_id"]),
+                "dr2_bridge_status": status,
+                "dr2_neighbour_count": neighbour_count,
+                "dr2_angular_distance_mas": float(
+                    nearest["angular_distance_mas"]
+                ),
+                "dr2_second_distance_mas": second_distance,
+                "dr2_distance_margin_mas": margin,
+                "dr2_magnitude_difference_mag": float(
+                    nearest["magnitude_difference_mag"]
+                ),
+                "dr2_proper_motion_propagation": bool(
+                    nearest["proper_motion_propagation"]
+                ),
+            }
+        )
+    return (
+        pd.DataFrame.from_records(records, columns=_AUDITED_COLUMNS)
+        .sort_values("source_id", kind="stable")
+        .reset_index(drop=True)
+    )
