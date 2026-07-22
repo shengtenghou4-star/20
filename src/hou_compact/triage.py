@@ -218,18 +218,47 @@ def triage_followup(
         )
     passed.append("no_high_risk_gaia_contamination_signal")
 
+    roche_status = str(row.get("roche_status", ""))
+    filling_q16 = _finite_float(row, "filling_q16")
+    filling_q50 = _finite_float(row, "filling_q50")
+    if roche_status in {"", "nan", "input_error"}:
+        blockers.append("roche_geometry_audit_missing_or_failed")
+    elif roche_status == "geometry_inconsistent":
+        blockers.append("primary_overfills_periastron_roche_lobe")
+    elif roche_status == "near_or_overflowing_roche_lobe":
+        cautions.append("primary_near_periastron_roche_lobe")
+        passed.append("roche_geometry_audited_with_contact_caution")
+    elif roche_status == "detached_geometry_consistent":
+        passed.append("detached_roche_geometry")
+    else:
+        blockers.append(f"unknown_roche_geometry_status={roche_status}")
+    if filling_q16 is not None and filling_q16 > 1.0:
+        blockers.append("roche_filling_q16_above_unity")
+    if filling_q50 is not None and filling_q50 > 0.8:
+        cautions.append("roche_filling_median_above_0p8")
+
+    if blockers:
+        return _result(
+            stage="roche_geometry_hold",
+            rank=4,
+            passed=passed,
+            blockers=blockers,
+            cautions=cautions,
+            set_bits=set_bits,
+        )
+
     assert minimum_q16 is not None
     if minimum_q16 >= config.very_high_minimum_mass_q16_solar:
         stage = "very_high_minimum_mass_followup"
-        rank = 6
+        rank = 7
         passed.append("minimum_mass_q16_above_very_high_gate")
     elif minimum_q16 >= config.high_minimum_mass_q16_solar:
         stage = "high_minimum_mass_followup"
-        rank = 5
+        rank = 6
         passed.append("minimum_mass_q16_above_high_gate")
     else:
         stage = "orbit_supported_lower_mass"
-        rank = 4
+        rank = 5
         passed.append("minimum_mass_below_high_gate")
 
     cautions.append("no_spectral_sed_or_hierarchy_rejection_yet")
