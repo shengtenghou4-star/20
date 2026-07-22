@@ -22,12 +22,14 @@ def prioritize_desi_probe(
     existing_only: bool = True,
     program_priority: Mapping[str, int] = _DEFAULT_PROGRAM_PRIORITY,
 ) -> pd.DataFrame:
-    """Rank DESI files by seed density while keeping backup files last.
+    """Rank DESI files for a bounded pilot while placing backup data last.
 
-    The score is deliberately simple and auditable: files in HEALPix cells containing
-    more Gaia seed systems are tried first; ties prefer main bright, then main dark,
-    then backup. This maximizes the expected number of matched rows under a hard byte
-    and file-count budget without inspecting any candidate-level mass result.
+    Backup-program radial velocities require a separate published correction and are
+    excluded by default from orbit scoring. Therefore every non-backup file is attempted
+    before backup files. Within each class, HEALPix cells containing more Gaia seed systems
+    are tried first; ties prefer main bright, then main dark, then other programs. This
+    maximizes usable independent epochs under a hard file-count budget without inspecting
+    candidate-level masses.
 
     Only columns used by the ranker are required. Optional provenance columns such as
     ``relative_path``, ``etag``, and ``content_length`` are preserved when present but
@@ -65,9 +67,11 @@ def prioritize_desi_probe(
     probe["program_priority"] = (
         probe["program"].astype(str).map(program_priority).fillna(99).astype("int64")
     )
+    probe["backup_priority"] = probe["program"].astype(str).eq("backup").astype("int64")
     probe["survey_priority"] = probe["survey"].astype(str).ne("main").astype("int64")
     probe = probe.sort_values(
         [
+            "backup_priority",
             "seed_source_count",
             "survey_priority",
             "program_priority",
@@ -75,7 +79,7 @@ def prioritize_desi_probe(
             "survey",
             "program",
         ],
-        ascending=[False, True, True, True, True, True],
+        ascending=[True, False, True, True, True, True, True],
         kind="stable",
     ).reset_index(drop=True)
     probe.insert(0, "priority_rank", range(1, len(probe) + 1))

@@ -17,8 +17,6 @@ def test_seed_dense_pixels_are_prioritized_with_lean_probe_schema() -> None:
             ]
         }
     )
-    # This matches the lean schema produced by the current planner/probe pipeline;
-    # relative_path is intentionally absent because the ranker never uses it.
     probe = pd.DataFrame(
         {
             "healpix": [20, 10],
@@ -49,6 +47,32 @@ def test_backup_is_ranked_after_bright_and_dark_for_ties() -> None:
     )
     ranked = prioritize_desi_probe(gaia, probe)
     assert ranked["program"].tolist() == ["bright", "dark", "backup"]
+
+
+def test_backup_stays_last_even_when_its_pixel_is_denser() -> None:
+    gaia = pd.DataFrame(
+        {
+            "source_id": [
+                _source_id_for_healpix(30, 1),
+                _source_id_for_healpix(30, 2),
+                _source_id_for_healpix(30, 3),
+                _source_id_for_healpix(10, 1),
+            ]
+        }
+    )
+    probe = pd.DataFrame(
+        {
+            "healpix": [30, 10],
+            "survey": ["main", "main"],
+            "program": ["backup", "bright"],
+            "url": ["backup-dense", "bright-sparse"],
+            "exists": [True, True],
+        }
+    )
+    ranked = prioritize_desi_probe(gaia, probe)
+    assert ranked["program"].tolist() == ["bright", "backup"]
+    assert ranked["seed_source_count"].tolist() == [1, 3]
+    assert ranked["backup_priority"].tolist() == [0, 1]
 
 
 def test_nonexistent_files_are_removed_by_default() -> None:
