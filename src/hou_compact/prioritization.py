@@ -28,10 +28,14 @@ def prioritize_desi_probe(
     more Gaia seed systems are tried first; ties prefer main bright, then main dark,
     then backup. This maximizes the expected number of matched rows under a hard byte
     and file-count budget without inspecting any candidate-level mass result.
+
+    Only columns used by the ranker are required. Optional provenance columns such as
+    ``relative_path``, ``etag``, and ``content_length`` are preserved when present but
+    cannot block a valid probe table produced by a leaner file planner.
     """
     if "source_id" not in gaia_rows.columns:
         raise KeyError("gaia_rows has no source_id column")
-    required_probe = {"healpix", "survey", "program", "url", "relative_path"}
+    required_probe = {"healpix", "survey", "program", "url"}
     missing = sorted(required_probe - set(probe_rows.columns))
     if missing:
         raise KeyError(f"probe_rows is missing columns: {missing}")
@@ -47,10 +51,12 @@ def prioritize_desi_probe(
     if existing_only:
         if "exists" not in probe.columns:
             raise KeyError("probe_rows has no exists column")
-        if probe["exists"].dtype == bool:
-            exists = probe["exists"]
+        if pd.api.types.is_bool_dtype(probe["exists"]):
+            exists = probe["exists"].fillna(False)
         else:
-            exists = probe["exists"].astype(str).str.lower().isin({"1", "true", "yes"})
+            exists = probe["exists"].astype(str).str.strip().str.lower().isin(
+                {"1", "true", "yes", "y"}
+            )
         probe = probe.loc[exists].copy()
 
     probe["healpix"] = pd.to_numeric(probe["healpix"], errors="raise").astype("int64")
