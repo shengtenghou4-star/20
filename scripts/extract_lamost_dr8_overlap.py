@@ -39,7 +39,10 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         action="append",
         default=[],
-        help="repeat for AFGK/A/M per-spectrum catalogues containing obsid, rv, rv_err",
+        help=(
+            "repeat for AFGK/A/M per-spectrum catalogues containing "
+            "obsid, rv, rv_err"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -58,7 +61,9 @@ def _accepted_bridge(path: Path) -> tuple[dict[int, int], dict[str, int]]:
     if missing:
         raise KeyError(f"bridge is missing columns: {missing}")
     accepted = bridge.loc[
-        bridge["dr2_bridge_status"].eq("accepted_unique_or_separated_nearest")
+        bridge["dr2_bridge_status"].eq(
+            "accepted_unique_or_separated_nearest"
+        )
     ].copy()
     accepted["source_id_int"] = [
         parse_exact_int_text(value, name="bridge.source_id")
@@ -69,7 +74,9 @@ def _accepted_bridge(path: Path) -> tuple[dict[int, int], dict[str, int]]:
         for value in accepted["dr2_source_id"]
     ]
     if accepted["source_id_int"].duplicated().any():
-        raise LamostContractError("accepted bridge contains duplicate Gaia DR3 source IDs")
+        raise LamostContractError(
+            "accepted bridge contains duplicate Gaia DR3 source IDs"
+        )
     if accepted["dr2_source_id_int"].duplicated().any():
         raise LamostContractError(
             "accepted bridge maps one Gaia DR2 ID to multiple Gaia DR3 sources"
@@ -88,9 +95,15 @@ def _accepted_bridge(path: Path) -> tuple[dict[int, int], dict[str, int]]:
     return mapping, status_counts
 
 
-def _normalized_identifier_text(series: pd.Series) -> tuple[pd.Series, pd.Series]:
+def _normalized_identifier_text(
+    series: pd.Series,
+) -> tuple[pd.Series, pd.Series]:
     raw = series.astype("string").fillna("").str.strip()
-    normalized = raw.str.replace(r"[.]0+$", "", regex=True).str.removeprefix("+")
+    normalized = raw.str.replace(
+        r"[.]0+$",
+        "",
+        regex=True,
+    ).str.removeprefix("+")
     valid = normalized.str.fullmatch(r"[0-9]+")
     return normalized, valid
 
@@ -115,8 +128,11 @@ def _scan_multiple_epoch_catalog(
         chunksize=chunk_size,
     ):
         rows_scanned += len(chunk)
-        normalized, valid = _normalized_identifier_text(chunk["gaia_source_id"])
-        rows_with_invalid_identifier_text += int((~valid & normalized.ne("")).sum())
+        normalized, valid = _normalized_identifier_text(
+            chunk["gaia_source_id"]
+        )
+        invalid_nonempty = ~valid & normalized.ne("")
+        rows_with_invalid_identifier_text += int(invalid_nonempty.sum())
         selected = chunk.loc[valid & normalized.isin(targets)].copy()
         if selected.empty:
             continue
@@ -130,7 +146,9 @@ def _scan_multiple_epoch_catalog(
                 continue
             epochs["source_id"] = epochs["dr2_source_id"].map(dr2_to_dr3)
             if epochs["source_id"].isna().any():
-                raise RuntimeError("matched LAMOST DR2 ID is absent from frozen bridge map")
+                raise RuntimeError(
+                    "matched LAMOST DR2 ID is absent from frozen bridge map"
+                )
             epochs["source_id"] = epochs["source_id"].astype("int64")
             frames.append(epochs)
 
@@ -138,8 +156,10 @@ def _scan_multiple_epoch_catalog(
         output = pd.concat(frames, ignore_index=True)
         duplicate = output.duplicated(["source_id", "obsid"])
         if duplicate.any():
+            duplicate_count = int(duplicate.sum())
             raise LamostContractError(
-                f"extracted overlap contains {int(duplicate.sum())} duplicate source/obsid rows"
+                "extracted overlap contains "
+                f"{duplicate_count} duplicate source/obsid rows"
             )
         output = output.sort_values(
             ["source_id", "mjd", "obsid"],
@@ -149,7 +169,9 @@ def _scan_multiple_epoch_catalog(
         output = pd.DataFrame()
     summary = {
         "multiple_epoch_rows_scanned": rows_scanned,
-        "rows_with_invalid_identifier_text": rows_with_invalid_identifier_text,
+        "rows_with_invalid_identifier_text": (
+            rows_with_invalid_identifier_text
+        ),
         "matched_catalogue_rows": matched_catalogue_rows,
         "contract_failure_rows": contract_failures,
         "exploded_epoch_rows": len(output),
@@ -231,6 +253,15 @@ def _scan_spectrum_catalogs(
     }
 
 
+def _numeric_or_nan(
+    frame: pd.DataFrame,
+    column: str,
+) -> pd.Series:
+    if column not in frame.columns:
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+    return pd.to_numeric(frame[column], errors="coerce")
+
+
 def _standardize_for_orbit(joined: pd.DataFrame) -> pd.DataFrame:
     if joined.empty:
         return joined
@@ -240,13 +271,15 @@ def _standardize_for_orbit(joined: pd.DataFrame) -> pd.DataFrame:
     if "fibermask" in output.columns:
         fiber = pd.to_numeric(output["fibermask"], errors="coerce")
         output["fiberstatus"] = fiber.fillna(1).astype("int64")
+        output.loc[output["fiberstatus"].ne(0), "success"] = False
+        output.loc[output["fiberstatus"].ne(0), "rvs_warn"] = 1
     else:
         output["fiberstatus"] = 1
         output["success"] = False
         output["rvs_warn"] = 1
         output["lamost_epoch_status"] = "missing_fibermask"
-    output["sn_b"] = pd.to_numeric(output.get("snrg"), errors="coerce")
-    output["sn_r"] = pd.to_numeric(output.get("snri"), errors="coerce")
+    output["sn_b"] = _numeric_or_nan(output, "snrg")
+    output["sn_r"] = _numeric_or_nan(output, "snri")
     output["sn_z"] = np.nan
     output["program"] = "lamost_lrs_dr8_v1"
     output["expid"] = output["obsid"]
@@ -278,7 +311,9 @@ def main() -> None:
         epochs = join_lrs_spectrum_uncertainties(
             epochs,
             spectra,
-            maximum_rv_difference_kms=args.maximum_rv_difference_kms,
+            maximum_rv_difference_kms=(
+                args.maximum_rv_difference_kms
+            ),
         )
         epochs = _standardize_for_orbit(epochs)
 
@@ -314,14 +349,18 @@ def main() -> None:
         "spectrum_scan": spectrum_summary,
         "settings": {
             "chunk_size": args.chunk_size,
-            "maximum_rv_difference_kms": args.maximum_rv_difference_kms,
+            "maximum_rv_difference_kms": (
+                args.maximum_rv_difference_kms
+            ),
         },
         "interpretation_boundary": (
-            "Exact Gaia DR2 overlap and repeated LAMOST measurements do not establish "
-            "Gaia-orbit support or a compact-object classification."
+            "Exact Gaia DR2 overlap and repeated LAMOST measurements do not "
+            "establish Gaia-orbit support or a compact-object classification."
         ),
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
+    manifest_path = args.output.with_suffix(
+        args.output.suffix + ".manifest.json"
+    )
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",
