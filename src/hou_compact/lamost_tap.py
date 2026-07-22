@@ -16,12 +16,6 @@ class LAMOSTTapError(RuntimeError):
     """Raised when the official TAP metadata cannot prove the frozen contract."""
 
 
-def _normalized_frame(table: Any) -> pd.DataFrame:
-    frame = table.to_table().to_pandas()
-    frame.columns = [str(column).strip().lower() for column in frame.columns]
-    return frame
-
-
 def _query_hash(sql: str) -> str:
     return hashlib.sha256(sql.encode("utf-8")).hexdigest()
 
@@ -34,16 +28,40 @@ def _text(value: object) -> str:
     return str(value)
 
 
+def execute_tap_get(tap_url: str, sql: str, maxrec: int) -> pd.DataFrame:
+    """Execute a synchronous TAP query with GET.
+
+    The LAMOST DR8 TAP service currently rejects POST requests to ``/sync`` with
+    HTTP 405.  PyVO exposes the standards-compliant GET path through
+    ``TAPQuery.execute_votable(post=False)``.
+    """
+
+    query = pyvo.dal.TAPQuery(
+        tap_url,
+        sql,
+        mode="sync",
+        language="ADQL",
+        maxrec=maxrec,
+    )
+    votable = query.execute_votable(post=False)
+    table = votable.get_first_table()
+    if table is None:
+        raise LAMOSTTapError("TAP response contains no result table")
+    frame = table.to_table(use_names_over_ids=True).to_pandas()
+    frame.columns = [str(column).strip().lower() for column in frame.columns]
+    return frame
+
+
 def discover_lamost_tap_contract(
     tap_url: str,
     *,
     maximum_tables: int = 10_000,
     maximum_columns: int = 100_000,
-    service_factory: Callable[[str], Any] = pyvo.dal.TAPService,
+    query_executor: Callable[[str, str, int], pd.DataFrame] = execute_tap_get,
 ) -> dict[str, object]:
     """Discover a DR8 LRS multiple-epoch table from public TAP_SCHEMA metadata.
 
-    The function reads schema metadata only.  It requires the complete frozen set of
+    The function reads schema metadata only. It requires the complete frozen set of
     multiple-epoch columns in one table and fails closed if the metadata query reaches
     either configured row ceiling.
     """
@@ -53,7 +71,6 @@ def discover_lamost_tap_contract(
     if maximum_tables < 1 or maximum_columns < 1:
         raise ValueError("metadata row ceilings must be positive")
 
-    service = service_factory(tap_url)
     table_sql = (
         "SELECT TOP {maximum} schema_name, table_name, description "
         "FROM TAP_SCHEMA.tables ORDER BY schema_name, table_name"
@@ -63,12 +80,10 @@ def discover_lamost_tap_contract(
         "FROM TAP_SCHEMA.columns ORDER BY table_name, column_name"
     ).format(maximum=maximum_columns)
 
-    tables = _normalized_frame(
-        service.run_sync(table_sql, maxrec=maximum_tables + 1)
-    )
-    columns = _normalized_frame(
-        service.run_sync(column_sql, maxrec=maximum_columns + 1)
-    )
+    tables = query_executor(tap_url, table_sql, maximum_tables + 1).copy()
+    columns = query_executor(tap_url, column_sql, maximum_columns + 1).copy()
+    tables.columns = [str(column).strip().lower() for column in tables.columns]
+    columns.columns = [str(column).strip().lower() for column in columns.columns]
     required_table_fields = {"schema_name", "table_name", "description"}
     required_column_fields = {"table_name", "column_name", "datatype", "description"}
     missing_table_fields = sorted(required_table_fields - set(tables.columns))
@@ -90,8 +105,6 @@ def discover_lamost_tap_contract(
             "TAP column discovery reached maximum_columns and may be truncated"
         )
 
-    tables = tables.copy()
-    columns = columns.copy()
     for name in ("schema_name", "table_name", "description"):
         tables[name] = tables[name].map(_text)
     for name in ("table_name", "column_name", "datatype", "description"):
@@ -128,9 +141,10 @@ def discover_lamost_tap_contract(
                 "datatype": str(row.datatype),
                 "description": str(row.description)[:500],
             }
-            for row in group.sort_values("column_name_normalized", kind="stable").itertuples(
-                index=False
-            )
+            for row in group.sort_values(
+                "column_name_normalized",
+                kind="stable",
+            ).itertuples(index=False)
         ]
         candidates.append(
             {
@@ -169,6 +183,7 @@ def discover_lamost_tap_contract(
     return {
         "status": "pass",
         "tap_url": tap_url,
+        "transport": "sync_get",
         "table_query_sha256": _query_hash(table_sql),
         "column_query_sha256": _query_hash(column_sql),
         "tap_table_count": len(tables),
