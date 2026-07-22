@@ -1,9 +1,9 @@
 """Exact, bounded LAMOST TAP acquisition for per-spectrum RV uncertainties.
 
 The multiple-epoch catalogue identifies relevant spectrum IDs but does not carry
-per-spectrum RV uncertainties.  This module discovers TAP tables exposing the
+per-spectrum RV uncertainties. This module discovers TAP tables exposing the
 required ``obsid``, ``rv``, and ``rv_err`` columns, then requests only exact obsid
-batches.  It never performs positional matching or unrestricted catalogue scans.
+batches. It never performs positional matching or unrestricted catalogue scans.
 """
 
 from __future__ import annotations
@@ -221,9 +221,9 @@ def query_exact_obsids(
 ) -> tuple[pd.DataFrame, list[TapQueryReceipt]]:
     """Query exact obsids across scoring-ready tables and choose one row per obsid.
 
-    Tables are searched in deterministic scientific priority.  When an obsid occurs
+    Tables are searched in deterministic scientific priority. When an obsid occurs
     in more than one subset catalogue, the first finite-positive-error row from the
-    highest-priority table is retained.  All duplicate provenance remains summarized
+    highest-priority table is retained. All duplicate provenance remains summarized
     by ``matched_table_count``; no rows are merged numerically across pipelines.
     """
 
@@ -261,9 +261,20 @@ def query_exact_obsids(
     combined = pd.concat(frames, ignore_index=True, sort=False)
     if combined.empty:
         return combined, receipts
+
+    # Concatenation across heterogeneous TAP tables can restore object dtype even
+    # though each table was normalized independently. Re-normalize at the final
+    # decision boundary so finite/error priority is deterministic across pandas
+    # versions and masked-array adapters.
+    combined["obsid"] = pd.to_numeric(combined["obsid"], errors="raise").astype("int64")
+    combined["rv"] = pd.to_numeric(combined["rv"], errors="coerce")
+    combined["rv_err"] = pd.to_numeric(combined["rv_err"], errors="coerce")
+    combined["tap_table_priority"] = pd.to_numeric(
+        combined["tap_table_priority"], errors="raise"
+    ).astype("int64")
     combined["finite_positive_error"] = (
-        np.isfinite(combined["rv"])
-        & np.isfinite(combined["rv_err"])
+        combined["rv"].notna()
+        & combined["rv_err"].notna()
         & combined["rv_err"].gt(0)
     )
     combined["matched_table_count"] = combined.groupby("obsid")["tap_table"].transform(

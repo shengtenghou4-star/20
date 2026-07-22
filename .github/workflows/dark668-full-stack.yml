@@ -25,7 +25,7 @@ concurrency:
 jobs:
   live-public-data-stack:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -49,6 +49,7 @@ jobs:
             tests/test_dark668_coverage.py \
             tests/test_dark668_lamost.py \
             tests/test_dark668_rv.py \
+            tests/test_dark668_kepler.py \
             tests/test_lamost_tap_rv.py
 
       - name: Acquire frozen candidate catalogues and exact Gaia bridge
@@ -172,6 +173,25 @@ jobs:
             --permutations 99 \
             --base-seed 20260723
 
+      - name: Run full Keplerian audit on preselected targets
+        id: kepler_score
+        if: steps.period_score.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/score_dark668_keplerian.py \
+            outputs/private/dark668_seed.csv \
+            outputs/private/dark668_lamost_scorable_epochs.csv \
+            --circular-scores outputs/private/dark668_period_prior_scores.csv \
+            --output outputs/private/dark668_keplerian_scores.csv \
+            --safe-summary outputs/dark668_keplerian_summary.json \
+            --minimum-visits 7 \
+            --minimum-circular-delta-bic 6 \
+            --period-grid-size 192 \
+            --maximum-eccentricity 0.95 \
+            --random-starts 32 \
+            --maximum-function-evaluations 4000 \
+            --base-seed 20260723
+
       - name: Build candidate-safe master receipt
         if: always()
         env:
@@ -184,6 +204,7 @@ jobs:
           TAP_RV_OUTCOME: ${{ steps.tap_rv.outcome }}
           JOIN_OUTCOME: ${{ steps.join_rv.outcome }}
           PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
+          KEPLER_OUTCOME: ${{ steps.kepler_score.outcome }}
         run: |
           mkdir -p outputs
           python - <<'PY'
@@ -199,6 +220,7 @@ jobs:
               'dark668_lamost_tap_rv_summary.json',
               'dark668_lamost_join_summary.json',
               'dark668_period_prior_summary.json',
+              'dark668_keplerian_summary.json',
           ]
           receipts = {}
           for name in names:
@@ -206,7 +228,7 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.1',
+              'schema_version': '0.2',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
@@ -221,12 +243,13 @@ jobs:
                   'tap_rv': os.environ.get('TAP_RV_OUTCOME'),
                   'join_rv': os.environ.get('JOIN_OUTCOME'),
                   'period_score': os.environ.get('PERIOD_OUTCOME'),
+                  'kepler_score': os.environ.get('KEPLER_OUTCOME'),
               },
               'receipts': receipts,
               'claim_boundary': (
-                  'A successful run produces a reproducible follow-up queue only. '
-                  'No source is classified as a binary, neutron star, black hole, '
-                  'or compact object without downstream full-orbit and contamination audits.'
+                  'The stack produces a reproducible follow-up queue and model audits only. '
+                  'No source is classified as a binary, neutron star, black hole, or compact '
+                  'object without downstream stellar, contamination, robustness, and novelty gates.'
               ),
           }
           Path('outputs/dark668_full_stack_summary.json').write_text(
@@ -297,3 +320,4 @@ jobs:
           test "${{ steps.tap_rv.outcome }}" = "success"
           test "${{ steps.join_rv.outcome }}" = "success"
           test "${{ steps.period_score.outcome }}" = "success"
+          test "${{ steps.kepler_score.outcome }}" = "success"
