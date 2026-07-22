@@ -45,11 +45,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--maxrec-per-batch", type=int, default=5000)
     parser.add_argument("--maximum-nearest-distance-mas", type=float, default=1000.0)
     parser.add_argument("--minimum-distance-margin-mas", type=float, default=5.0)
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="replace existing bridge, neighbourhood, and manifest outputs",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    neighbourhood_output = args.neighbourhood_output or args.output.with_name(
+        args.output.stem + ".neighbourhood.csv"
+    )
+    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
+    output_paths = (args.output, neighbourhood_output, manifest_path)
+    existing = [str(path) for path in output_paths if path.exists()]
+    if existing and not args.overwrite:
+        raise FileExistsError(
+            "Gaia DR2 bridge outputs already exist; pass --overwrite to replace them: "
+            + ", ".join(existing)
+        )
+    if args.overwrite:
+        for path in output_paths:
+            path.unlink(missing_ok=True)
+
     gaia = read_table(args.gaia)
     if "source_id" not in gaia.columns:
         raise KeyError("Gaia input has no source_id column")
@@ -71,9 +91,6 @@ def main() -> None:
         minimum_distance_margin_mas=args.minimum_distance_margin_mas,
     )
 
-    neighbourhood_output = args.neighbourhood_output or args.output.with_name(
-        args.output.stem + ".neighbourhood.csv"
-    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     neighbourhood_output.parent.mkdir(parents=True, exist_ok=True)
     neighbours.to_csv(neighbourhood_output, index=False)
@@ -118,7 +135,6 @@ def main() -> None:
             "and REF_ID equality is demonstrated."
         ),
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",
