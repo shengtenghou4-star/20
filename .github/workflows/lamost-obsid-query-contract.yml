@@ -5,7 +5,9 @@ on:
     branches: [main]
     paths:
       - "scripts/probe_lamost_search_form.py"
+      - "scripts/probe_lamost_obsid_csv.py"
       - "tests/test_probe_lamost_search_form.py"
+      - "tests/test_probe_lamost_obsid_csv.py"
       - ".github/workflows/lamost-obsid-query-contract.yml"
 
 permissions:
@@ -18,38 +20,55 @@ concurrency:
 jobs:
   contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Compile and test candidate-safe form parser
+      - name: Compile and test candidate-safe form clients
         run: |
           python -m py_compile \
             scripts/probe_lamost_search_form.py \
-            tests/test_probe_lamost_search_form.py
+            scripts/probe_lamost_obsid_csv.py \
+            tests/test_probe_lamost_search_form.py \
+            tests/test_probe_lamost_obsid_csv.py
           python -m unittest discover \
             -s tests \
             -p 'test_probe_lamost_search_form.py' \
             -v
-      - name: Probe public LAMOST search-form contract
-        id: probe
+          python -m unittest discover \
+            -s tests \
+            -p 'test_probe_lamost_obsid_csv.py' \
+            -v
+      - name: Probe public LAMOST search-form metadata contract
+        id: form_probe
         continue-on-error: true
         run: |
           python scripts/probe_lamost_search_form.py \
             --output lamost_search_form_contract.json \
             > lamost_search_form_probe.log 2>&1
-      - name: Upload candidate-safe form contract
+      - name: Probe official-sample exact-obsid CSV contract
+        id: csv_probe
+        continue-on-error: true
+        run: |
+          python scripts/probe_lamost_obsid_csv.py \
+            --output lamost_obsid_csv_contract.json \
+            > lamost_obsid_csv_probe.log 2>&1
+      - name: Upload candidate-safe obsid query contracts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lamost-search-form-contract-${{ github.run_id }}
+          name: lamost-obsid-query-contract-${{ github.run_id }}
           path: |
             lamost_search_form_contract.json
             lamost_search_form_probe.log
+            lamost_obsid_csv_contract.json
+            lamost_obsid_csv_probe.log
           if-no-files-found: error
           retention-days: 30
-      - name: Preserve probe failure after artifact upload
+      - name: Preserve probe failures after artifact upload
         if: always()
-        run: test "${{ steps.probe.outcome }}" = "success"
+        run: |
+          test "${{ steps.form_probe.outcome }}" = "success"
+          test "${{ steps.csv_probe.outcome }}" = "success"
