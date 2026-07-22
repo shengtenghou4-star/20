@@ -111,7 +111,7 @@ def test_response_with_unknown_source_is_rejected() -> None:
         del timeout
         return _Response(text)
 
-    with pytest.raises(DataLabQueryError, match="outside the request"):
+    with pytest.raises(DataLabQueryError, match="outside the current batch"):
         query_desi_gaia_overlap(
             [1],
             config=DataLabQueryConfig(retries=0),
