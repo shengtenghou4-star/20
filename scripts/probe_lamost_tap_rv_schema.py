@@ -1,32 +1,22 @@
 #!/usr/bin/env python3
-"""Discover first-party LAMOST TAP tables carrying per-spectrum RV errors.
+"""Validate the LAMOST TAP schema required by the Dark-668 live route.
 
-This command queries TAP_SCHEMA only. It never requests catalogue source rows,
-identifiers, coordinates, spectra, or radial-velocity measurements. A bounded,
-candidate-safe diagnostic is written even when endpoint discovery or schema access
-fails, while the command still exits non-zero so transport failures cannot look green.
+Only TAP_SCHEMA metadata is queried. The probe validates both the per-spectrum
+``obsid + rv + rv_err`` contract and an identity-safe multiple-epoch table whose Gaia
+identifier is stored as integer or text. It never requests catalogue source rows.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 
 from hou_compact.lamost_openapi import discover_openapi_contract
 from hou_compact.lamost_tap_get import TapGetService
+from hou_compact.lamost_tap_mec import discover_mec_table_specs
+from hou_compact.lamost_tap_rv import discover_rv_table_specs
 
-
-TARGET_COLUMNS = (
-    "obsid",
-    "gaia_source_id",
-    "rv",
-    "rv_err",
-    "snrg",
-    "snri",
-    "fibermask",
-)
 _CLAIM_BOUNDARY = (
     "TAP_SCHEMA metadata only. No catalogue rows, source identifiers, coordinates, "
     "spectra, radial velocities, or candidate classifications were requested."
@@ -54,29 +44,17 @@ def _write(path: Path, payload: dict[str, object]) -> None:
     print(text)
 
 
-def _base_payload(args: argparse.Namespace, query: str) -> dict[str, object]:
-    return {
-        "schema_version": "0.3",
+def main() -> None:
+    args = parse_args()
+    payload: dict[str, object] = {
+        "schema_version": "0.4",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
         "transport": "bounded_https_get",
-        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
-        "target_columns": sorted(TARGET_COLUMNS),
         "claim_boundary": _CLAIM_BOUNDARY,
     }
-
-
-def main() -> None:
-    args = parse_args()
-    literals = ", ".join(f"'{column}'" for column in TARGET_COLUMNS)
-    query = (
-        "SELECT table_name, column_name, datatype, description "
-        "FROM TAP_SCHEMA.columns "
-        f"WHERE column_name IN ({literals})"
-    )
-    payload = _base_payload(args, query)
     service: TapGetService | None = None
     try:
         contract = discover_openapi_contract(
@@ -95,55 +73,49 @@ def main() -> None:
         tap_url = tap_urls[0]
         payload["tap_url"] = tap_url
         service = TapGetService(tap_url, timeout=args.timeout)
-        frame = service.run_sync(query, maxrec=10_000)
-        frame.columns = [str(column).lower() for column in frame.columns]
-        required = {"table_name", "column_name"}
-        missing = sorted(required - set(frame.columns))
-        if missing:
-            raise RuntimeError(f"TAP_SCHEMA result missing columns: {missing}")
+        contract_errors: dict[str, dict[str, str]] = {}
 
-        grouped: list[dict[str, object]] = []
-        for table_name, group in frame.groupby("table_name", sort=True):
-            columns = sorted({str(value).lower() for value in group["column_name"]})
-            grouped.append(
-                {
-                    "table_name": str(table_name),
-                    "columns": columns,
-                    "has_obsid": "obsid" in columns,
-                    "has_gaia_source_id": "gaia_source_id" in columns,
-                    "has_rv": "rv" in columns,
-                    "has_rv_err": "rv_err" in columns,
-                    "rv_scoring_ready": {"obsid", "rv", "rv_err"}.issubset(columns),
-                }
-            )
-        scoring_tables = [row for row in grouped if row["rv_scoring_ready"]]
-        payload.update(
-            {
-                "matching_table_count": len(grouped),
-                "rv_scoring_table_count": len(scoring_tables),
-                "tables": grouped,
-                "transport_receipts": [
-                    receipt.to_record() for receipt in service.receipts
-                ],
-                "status": "pass" if scoring_tables else "no_scoring_table",
+        try:
+            rv_specs = discover_rv_table_specs(service)
+            payload["rv_scoring_table_count"] = len(rv_specs)
+            payload["rv_table_specs"] = [spec.to_record() for spec in rv_specs]
+        except Exception as error:
+            contract_errors["per_spectrum_rv"] = {
+                "error_type": type(error).__name__,
+                "error": str(error)[:2_000],
             }
-        )
-        if not scoring_tables:
-            raise RuntimeError("no TAP table exposes obsid, rv, and rv_err together")
+
+        try:
+            mec_specs = discover_mec_table_specs(service)
+            payload["identity_safe_mec_table_count"] = len(mec_specs)
+            payload["mec_table_specs"] = [spec.to_record() for spec in mec_specs]
+        except Exception as error:
+            contract_errors["multiple_epoch_identity"] = {
+                "error_type": type(error).__name__,
+                "error": str(error)[:2_000],
+            }
+
+        payload["transport_receipts"] = [
+            receipt.to_record() for receipt in service.receipts
+        ]
+        payload["contract_errors"] = contract_errors
+        if contract_errors:
+            payload["status"] = "contract_failure"
+            _write(args.output, payload)
+            failed = ", ".join(sorted(contract_errors))
+            raise RuntimeError(f"LAMOST TAP schema contract failed: {failed}")
+        payload["status"] = "pass"
         _write(args.output, payload)
     except Exception as error:
         if service is not None:
             payload["transport_receipts"] = [
                 receipt.to_record() for receipt in service.receipts
             ]
-        payload["status"] = (
-            payload["status"]
-            if payload.get("status") == "no_scoring_table"
-            else "failure"
-        )
-        payload["error_type"] = type(error).__name__
-        payload["error"] = str(error)[:2_000]
-        _write(args.output, payload)
+        if payload.get("status") != "contract_failure":
+            payload["status"] = "failure"
+            payload["error_type"] = type(error).__name__
+            payload["error"] = str(error)[:2_000]
+            _write(args.output, payload)
         raise
 
 
