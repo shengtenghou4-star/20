@@ -42,12 +42,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _read_obsids(path: Path) -> list[int]:
+    try:
+        epochs = pd.read_csv(path, dtype={"obsid": "string"})
+    except pd.errors.EmptyDataError:
+        return []
+    if "obsid" not in epochs.columns:
+        if epochs.empty:
+            return []
+        raise KeyError("epoch input has no obsid column")
+    return normalize_obsids(epochs["obsid"])
+
+
 def main() -> None:
     args = parse_args()
-    epochs = pd.read_csv(args.epochs, dtype={"obsid": "string"})
-    if "obsid" not in epochs.columns:
-        raise KeyError("epoch input has no obsid column")
-    obsids = normalize_obsids(epochs["obsid"])
+    obsids = _read_obsids(args.epochs)
     contract = discover_openapi_contract(
         openapi_root=args.openapi_root,
         dr_version=args.dr_version,
