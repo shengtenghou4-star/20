@@ -4,19 +4,38 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+
+import pandas as pd
 
 from hou_compact.datalab import (
     DESI_ZPIX_TABLE,
     GAIA_DESI_XMATCH_TABLE,
     DataLabQueryConfig,
-    execute_sync_csv_query,
     parse_desi_gaia_overlap_csv,
 )
+from hou_compact.datalab_query_manager import execute_query_manager_csv
 
 
 def main() -> None:
-    sql = f"""SELECT TOP 1
+    config = DataLabQueryConfig(timeout_seconds=45.0, retries=0)
+    discovery_sql = f"""SELECT id2 AS zpix_id
+FROM {GAIA_DESI_XMATCH_TABLE}
+LIMIT 1"""
+    discovery_text, discovery_attempts = execute_query_manager_csv(
+        discovery_sql,
+        config=config,
+    )
+    discovery = pd.read_csv(io.StringIO(discovery_text), dtype=str)
+    discovery.columns = [str(column).strip().lower() for column in discovery.columns]
+    if len(discovery) != 1 or "zpix_id" not in discovery.columns:
+        raise RuntimeError(
+            "Data Lab discovery smoke did not return exactly one zpix_id row"
+        )
+    zpix_id = int(discovery.iloc[0]["zpix_id"])
+
+    join_sql = f"""SELECT
     x.id1 AS source_id,
     z.targetid AS targetid,
     z.survey AS survey,
@@ -25,11 +44,11 @@ def main() -> None:
     x.distance AS match_distance_arcsec
 FROM {GAIA_DESI_XMATCH_TABLE} AS x
 JOIN {DESI_ZPIX_TABLE} AS z ON x.id2 = z.id
-WHERE z.survey = 'main'
-  AND z.program IN ('bright','dark')"""
-    text, attempts = execute_sync_csv_query(
-        sql,
-        config=DataLabQueryConfig(timeout_seconds=120.0, retries=2),
+WHERE x.id2 = {zpix_id}
+LIMIT 1"""
+    text, join_attempts = execute_query_manager_csv(
+        join_sql,
+        config=config,
     )
     frame = parse_desi_gaia_overlap_csv(text)
     if len(frame) != 1:
@@ -38,9 +57,13 @@ WHERE z.survey = 'main'
         "status": "pass",
         "rows": len(frame),
         "columns": frame.columns.tolist(),
-        "attempts": attempts,
-        "query_sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+        "attempts": discovery_attempts + join_attempts,
+        "discovery_query_sha256": hashlib.sha256(
+            discovery_sql.encode("utf-8")
+        ).hexdigest(),
+        "join_query_sha256": hashlib.sha256(join_sql.encode("utf-8")).hexdigest(),
         "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "transport": "official_query_manager_nested_query_endpoint",
         "claim_boundary": (
             "No source identifiers or catalogue values are printed by this smoke test."
         ),
