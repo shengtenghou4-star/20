@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 
 import pandas as pd
 
@@ -23,13 +23,17 @@ class SensitivityGrid:
     max_primary_fractional_width: tuple[float, ...] = (0.50, 0.75, 1.00)
 
     def __post_init__(self) -> None:
-        if not self.min_clean_desi_epochs or any(value < 2 for value in self.min_clean_desi_epochs):
+        if not self.min_clean_desi_epochs or any(
+            value < 2 for value in self.min_clean_desi_epochs
+        ):
             raise ValueError("clean-epoch thresholds must all be at least 2")
         if not self.min_phase_coverage or any(
             not 0 <= value <= 1 for value in self.min_phase_coverage
         ):
             raise ValueError("phase-coverage thresholds must lie in [0, 1]")
-        if not self.min_delta_chi2 or any(value < 0 for value in self.min_delta_chi2):
+        if not self.min_delta_chi2 or any(
+            value < 0 for value in self.min_delta_chi2
+        ):
             raise ValueError("delta-chi2 thresholds must be non-negative")
         if not self.max_primary_fractional_width or any(
             value <= 0 for value in self.max_primary_fractional_width
@@ -89,10 +93,20 @@ def iter_sensitivity_configs(
     ]
 
 
-def _stratum_counts(frame: pd.DataFrame, stages: pd.Series, column: str) -> dict[str, dict[str, int]]:
+def _stratum_counts(
+    frame: pd.DataFrame,
+    stages: pd.Series,
+    column: str,
+) -> dict[str, dict[str, int]]:
     if column not in frame.columns:
         return {}
-    values = frame[column].astype("string").fillna("missing").str.strip().replace("", "missing")
+    values = (
+        frame[column]
+        .astype("string")
+        .fillna("missing")
+        .str.strip()
+        .replace("", "missing")
+    )
     passed = stages.isin(FOLLOWUP_STAGES)
     output: dict[str, dict[str, int]] = {}
     for value in sorted(values.unique()):
@@ -113,7 +127,8 @@ def run_triage_sensitivity(
     """Re-evaluate every row over the frozen grid and return aggregate-only results."""
     if frame.empty:
         raise ValueError("triage input must not be empty")
-    records = frame.to_dict(orient="records")
+    normalized = frame.reset_index(drop=True)
+    records = normalized.to_dict(orient="records")
     outputs: list[dict[str, object]] = []
     configs = iter_sensitivity_configs(grid, base_config)
     if len(configs) != grid.size:
@@ -147,9 +162,15 @@ def run_triage_sensitivity(
                     "contamination_resolution_hold"
                 ],
                 "roche_geometry_hold": counts["roche_geometry_hold"],
-                "sb1_strata": _stratum_counts(frame, stages, "nss_solution_type"),
+                "sb1_strata": _stratum_counts(
+                    normalized,
+                    stages,
+                    "nss_solution_type",
+                ),
                 "identifier_path_strata": _stratum_counts(
-                    frame, stages, "source_match_mode"
+                    normalized,
+                    stages,
+                    "source_match_mode",
                 ),
             }
         )
@@ -192,8 +213,12 @@ def candidate_safe_sensitivity_summary(results: pd.DataFrame) -> dict[str, objec
         "candidate_safe": True,
         "configuration_count": int(len(results)),
         "cohort_rows": int(results.iloc[0]["cohort_rows"]),
-        "all_evidence_gates_passed_range": range_record("all_evidence_gates_passed"),
-        "high_minimum_mass_followup_range": range_record("high_minimum_mass_followup"),
+        "all_evidence_gates_passed_range": range_record(
+            "all_evidence_gates_passed"
+        ),
+        "high_minimum_mass_followup_range": range_record(
+            "high_minimum_mass_followup"
+        ),
         "very_high_minimum_mass_followup_range": range_record(
             "very_high_minimum_mass_followup"
         ),
