@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -18,6 +19,18 @@ def _seed_script() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _all_keys(value: Any) -> set[str]:
+    if isinstance(value, dict):
+        return {str(key) for key in value} | {
+            nested
+            for child in value.values()
+            for nested in _all_keys(child)
+        }
+    if isinstance(value, list):
+        return {nested for child in value for nested in _all_keys(child)}
+    return set()
 
 
 @pytest.fixture
@@ -62,7 +75,7 @@ def test_build_seed_preserves_exact_population_counts(
     assert len(seed) == 668
     assert seed["source_id"].is_unique
     assert summary["seed"]["population_counts"] == {"MS": 279, "RGB": 389}
-    assert "source_id" not in str(summary)
+    assert {"source_id", "ra", "dec"}.isdisjoint(_all_keys(summary))
 
 
 def test_build_seed_supports_rgb_top_n(frozen_catalogue_dir: Path) -> None:
