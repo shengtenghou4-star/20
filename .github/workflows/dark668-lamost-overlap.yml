@@ -9,6 +9,7 @@ on:
       - "scripts/prepare_dark668_seed.py"
       - "scripts/query_gaia_dr2_bridge.py"
       - "scripts/extract_lamost_dr8_overlap.py"
+      - "keys/hou_compact_relay_public.pem"
       - ".github/workflows/dark668-lamost-overlap.yml"
   workflow_dispatch:
 
@@ -128,10 +129,55 @@ jobs:
           output.write_text(json.dumps(safe, indent=2, sort_keys=True))
           print(json.dumps(safe, indent=2, sort_keys=True))
           PY
-      - name: Delete source-level and raw products before upload
+      - name: Encrypt source-level LAMOST overlap evidence
         if: always()
-        run: rm -rf outputs/private data/raw/dark668 data/raw/lamost
-      - name: Upload candidate-safe receipts only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p encrypted_output
+          if [[ -d outputs/private ]]; then
+            tar -C outputs/private -czf /tmp/dark668_lamost_private.tar.gz .
+          else
+            mkdir -p /tmp/dark668_empty
+            printf '%s\n' 'No source-level output directory was produced.' \
+              > /tmp/dark668_empty/NO_SOURCE_OUTPUT.txt
+            tar -C /tmp/dark668_empty -czf /tmp/dark668_lamost_private.tar.gz .
+          fi
+          openssl rand -hex 32 > /tmp/dark668_lamost_passphrase.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -pass file:/tmp/dark668_lamost_passphrase.txt \
+            -in /tmp/dark668_lamost_private.tar.gz \
+            -out encrypted_output/dark668_lamost_private.tar.gz.enc
+          openssl pkeyutl -encrypt \
+            -pubin \
+            -inkey keys/hou_compact_relay_public.pem \
+            -in /tmp/dark668_lamost_passphrase.txt \
+            -out encrypted_output/dark668_lamost_private.key.enc \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          for receipt in \
+            outputs/dark668_catalogue_summary.json \
+            outputs/dark668_seed_summary.json \
+            outputs/lamost_mec_file_receipt.json \
+            outputs/dark668_lamost_overlap_summary.json; do
+            if [[ -f "$receipt" ]]; then
+              cp "$receipt" encrypted_output/
+            fi
+          done
+          sha256sum encrypted_output/* > encrypted_output/SHA256SUMS
+          shred -u \
+            /tmp/dark668_lamost_passphrase.txt \
+            /tmp/dark668_lamost_private.tar.gz
+          rm -rf /tmp/dark668_empty outputs/private data/raw/dark668 data/raw/lamost
+      - name: Upload encrypted source-level package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-lamost-overlap-encrypted-${{ github.run_id }}
+          path: encrypted_output/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Upload candidate-safe receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
