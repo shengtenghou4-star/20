@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
-from typing import Any
 
 import pandas as pd
 import pyvo
@@ -32,7 +31,7 @@ def execute_tap_get(tap_url: str, sql: str, maxrec: int) -> pd.DataFrame:
     """Execute a synchronous TAP query with GET.
 
     The LAMOST DR8 TAP service currently rejects POST requests to ``/sync`` with
-    HTTP 405.  PyVO exposes the standards-compliant GET path through
+    HTTP 405. PyVO exposes the standards-compliant GET path through
     ``TAPQuery.execute_votable(post=False)``.
     """
 
