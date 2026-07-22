@@ -10,33 +10,12 @@ from hou_compact.dark668 import CATALOGUES
 
 @pytest.fixture
 def frozen_catalogue_dir(tmp_path: Path) -> Path:
-    columns = {
-        "source_id": [],
-        "ra": [],
-        "dec": [],
-        "parallax": [],
-        "parallax_error": [],
-        "phot_g_mean_mag": [],
-        "ruwe": [],
-        "rv_amplitude_robust": [],
-        "rv_nb_transits": [],
-        "mass": [],
-        "radius": [],
-        "fit_period": [],
-        "fit_period_errup": [],
-        "fit_period_errlow": [],
-        "fit_companion_mass": [],
-        "fit_companion_mass_errup": [],
-        "fit_companion_mass_errlow": [],
-        "mass_significance": [],
-        "flag_quality": [],
-    }
     for spec in CATALOGUES:
         count = spec.expected_promising_count
+        prefix = "1" if spec.population == "RGB" else "2"
         frame = pd.DataFrame(
             {
-                **columns,
-                "source_id": [f"{1 if spec.population == 'RGB' else 2}{index:018d}" for index in range(count)],
+                "source_id": [f"{prefix}{index:018d}" for index in range(count)],
                 "ra": [float(index % 360) for index in range(count)],
                 "dec": [float(index % 90) for index in range(count)],
                 "parallax": [2.0 + 0.001 * index for index in range(count)],
@@ -53,7 +32,9 @@ def frozen_catalogue_dir(tmp_path: Path) -> Path:
                 "fit_companion_mass": [4.0 + 0.01 * index for index in range(count)],
                 "fit_companion_mass_errup": [0.5] * count,
                 "fit_companion_mass_errlow": [0.4] * count,
-                "mass_significance": [0.8 + index / (10 * count)] * 1,
+                "mass_significance": [
+                    0.8 + index / (10 * count) for index in range(count)
+                ],
                 "flag_quality": [True] * count,
             }
         )
@@ -61,7 +42,9 @@ def frozen_catalogue_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_build_seed_preserves_exact_population_counts(frozen_catalogue_dir: Path) -> None:
+def test_build_seed_preserves_exact_population_counts(
+    frozen_catalogue_dir: Path,
+) -> None:
     from scripts.prepare_dark668_seed import build_seed
 
     seed, summary = build_seed(frozen_catalogue_dir, "all", None)
