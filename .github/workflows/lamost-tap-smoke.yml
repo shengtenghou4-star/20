@@ -7,13 +7,16 @@ on:
       - "src/hou_compact/lamost_openapi.py"
       - "src/hou_compact/lamost_sql.py"
       - "src/hou_compact/lamost_catalogue.py"
+      - "src/hou_compact/lamost_catalog_files.py"
       - "scripts/probe_lamost_tap_schema.py"
       - "scripts/probe_lamost_openapi.py"
       - "scripts/probe_lamost_sql_protocol.py"
       - "scripts/probe_lamost_catalogue_links.py"
+      - "scripts/probe_lamost_catalog_files.py"
       - "tests/test_lamost_openapi.py"
       - "tests/test_lamost_sql.py"
       - "tests/test_lamost_catalogue.py"
+      - "tests/test_lamost_catalog_files.py"
       - ".github/workflows/lamost-tap-smoke.yml"
   workflow_dispatch:
 
@@ -45,6 +48,12 @@ jobs:
             --output outputs/lamost_catalogue_links.json \
             > outputs/lamost_catalogue_links.stdout.json
           test -s outputs/lamost_catalogue_links.json
+      - name: Probe official compressed catalogue files
+        run: |
+          python scripts/probe_lamost_catalog_files.py \
+            --output outputs/lamost_catalog_files.json \
+            > outputs/lamost_catalog_files.stdout.json
+          test -s outputs/lamost_catalog_files.json
       - name: Discover official LAMOST OpenAPI metadata
         run: |
           python scripts/probe_lamost_openapi.py \
