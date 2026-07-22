@@ -1,180 +1,145 @@
 # HOU-COMPACT
 
-**Gaia × DESI search for quiescent compact-object companions**
+**Gaia orbital solutions × independent multi-epoch spectroscopy**
 
-HOU-COMPACT is a reproducible search for stars whose astrometric and spectroscopic motion may be explained by an unseen compact companion: a black hole, neutron star, or massive white dwarf.
+HOU-COMPACT is a reproducible search for stars whose orbital motion may be explained by an unseen compact companion: a black hole, neutron star, or massive white dwarf. The project is deliberately fail-closed: a large Gaia-only mass estimate is never treated as a compact-object classification.
 
 ## Core question
 
-Can independent DESI DR1 radial-velocity visits confirm, reject, or substantially re-rank Gaia DR3 single-lined spectroscopic-binary solutions that imply unusually massive and faint companions?
+How many apparently massive, unseen companions in the Gaia DR3 SB1/SB1C orbital catalogue survive reproducible orbital-quality, stellar-parameter, geometry, multiplicity, and independent radial-velocity tests?
 
-## Why this project is distinct
-
-This is a Galactic stellar-dynamics project. It does not rely on galaxy-image morphology or strong-lensing selection. The primary observables are orbital motion, parallax, radial velocity, stellar parameters, and spectral evidence for contaminating luminous companions.
-
-## Falsifiable hypotheses
-
-1. A small, measurable subset of Gaia DR3 SB1/SB1C systems will show independent DESI visits consistent with the published orbital phase and amplitude.
-2. Most apparently massive dark companions will be downgraded after accounting for bad orbital solutions, blends, luminous secondary stars, triples, stripped stars, and survey-specific RV systematics.
-3. After strict validation, a ranked tail may remain whose minimum-companion-mass distribution is difficult to reconcile with ordinary luminous binaries.
-
-## Primary data
-
-- Gaia DR3 `gaia_source`
-- Gaia DR3 `nss_two_body_orbit`
-- Gaia DR3 `astrophysical_parameters`
-- DESI DR1 MWS stellar VAC coadded measurements
-- DESI DR1 MWS single-exposure RVSpecFit measurements, aggregated into independent visits
-- Public photometry, catalogues, and literature services used for contamination and novelty checks
-
-Official documentation:
-
-- https://gea.esac.esa.int/archive/documentation/GDR3/
-- https://data.desi.lbl.gov/doc/releases/dr1/vac/mws/
-- https://desi-mws-dr1-datamodel.readthedocs.io/en/latest/
+The first external-spectroscopy experiment used DESI DR1 MWS. It is now complete and produced a rigorously validated **coverage null** for the frozen 5,000-source Gaia v9 cohort. The next validation extension targets broader stellar multi-epoch surveys, beginning with LAMOST DR8 and retaining APOGEE DR17 as a secondary path.
 
 ## Evidence standard
 
-No object will be called a compact-object candidate from a large inferred mass alone. A serious claim-audit package must survive:
+No object is called a compact-object candidate from a large inferred mass alone. A serious evidence package must survive:
 
-- Gaia spectroscopic-orbit quality and flag audits;
-- DESI independent-visit fixed-orbit consistency tests;
-- stellar-mass inference with propagated covariance;
-- an independently supported primary-star mass;
-- luminous-secondary and blend checks using spectra and SEDs;
-- alternative hierarchical-multiple and stripped-star hypotheses;
-- catalogue and literature crossmatching;
-- duplicate-safe final evidence assembly;
-- reproducible private candidate-card generation.
+- Gaia orbital quality, flags, and covariance audits;
+- an independently constrained primary-star mass;
+- correlated minimum-companion-mass inference;
+- detached Roche geometry;
+- authoritative source association to an external spectroscopic survey;
+- multiple independent visits with useful phase coverage;
+- fixed-Gaia-orbit versus constant-velocity comparison;
+- spectral, SED, blend, hierarchy, and stripped-star alternatives;
+- catalogue and literature novelty review;
+- duplicate-safe private evidence assembly.
 
-The strongest software status is `claim_audit_ready_not_classified`. The pipeline never authorizes an astrophysical classification.
+The strongest software state remains `claim_audit_ready_not_classified`. The pipeline never authorizes an astrophysical classification.
+
+## Frozen Gaia cohort
+
+Primary cohort: 5,000 Gaia DR3 `SB1`, `SB1C`, and `AstroSpectroSB1` solutions returned by the versioned v9 query.
+
+Current Gaia-side aggregate results:
+
+- 5,000 systems acquired with complete query provenance;
+- 250/250 covariance-reference checks passed;
+- 2,283 primary-mass and correlated minimum-mass products scored;
+- 2,717 rows remain input-error cases rather than astrophysical rejections;
+- q16 minimum-companion-mass counts: 1,770 at or above 1.4 solar masses, 284 at or above 3, 57 at or above 5, and 16 at or above 8;
+- 2,249 systems have detached Roche geometry under the frozen audit;
+- 18 are geometry-inconsistent and 16 are near or overflowing their primary Roche lobe.
+
+These are population and follow-up strata, not object classes.
+
+## DESI DR1 result
+
+Encrypted relay run `29916105258` completed the dual-path DESI source-association experiment:
+
+1. official NOIRLab Data Lab Gaia DR3–DESI DR1 zpix association followed by exact `TARGETID` extraction;
+2. official Gaia DR3-to-DR2 neighbourhood bridging followed by exact DESI `REF_CAT='G2'` and integer `REF_ID` equality.
+
+Frozen outcome:
+
+- 5,000/5,000 Gaia DR3 sources received accepted Gaia DR2 bridges;
+- 34 bounded Data Lab batches completed successfully;
+- exact Data Lab overlap rows: 0;
+- verified public main bright/dark MWS files scanned through the REF_ID path: 453/453;
+- exact DESI epoch rows: 0;
+- independently scorable Gaia orbits: 0.
+
+Therefore the public DESI DR1 MWS single-exposure products provide no exact source-level validation coverage for this frozen Gaia cohort. This is a survey-selection result, not evidence that the Gaia binaries are false.
+
+See [`results/CANDIDATE_SAFE_RUN_29916105258.md`](results/CANDIDATE_SAFE_RUN_29916105258.md).
 
 ## Work packages
 
-- **WP0 — Data contract and reproducibility**
-- **WP1 — Gaia SB1/SB1C seed catalogue**
-- **WP2 — DESI exposure extraction, visit construction, and quality control**
-- **WP3 — Independent orbit/RV consistency likelihood**
-- **WP4 — Minimum-mass and inclination-sensitivity products**
-- **WP5 — Contaminant rejection**
-- **WP6 — Evidence assembly, novelty audit, ranked follow-up catalogue, and paper**
+- **WP0 — data contract, provenance, and encrypted evidence**
+- **WP1 — Gaia seed catalogue and orbital-quality audit**
+- **WP2a — DESI DR1 source association and coverage experiment: complete**
+- **WP2b — LAMOST/APOGEE multi-epoch spectroscopy extension: active**
+- **WP3 — independent fixed-orbit validation and negative controls**
+- **WP4 — primary-star and companion-mass inference**
+- **WP5 — contamination and physical-consistency rejection**
+- **WP6 — attrition, sensitivity, evidence assembly, and paper**
 
 ## Current status
 
 Project initialized on **2026-07-21**.
 
-- [x] Scientific target and falsifiable hypotheses fixed
-- [x] Public-code and private-evidence repository policy initialized
-- [x] Corrected Gaia v7 query restricted to pure `SB1` and `SB1C`
-- [x] Gaia v7 parser compatibility validated by an encrypted live relay
-- [x] Persistent asynchronous Gaia UWS acquisition implemented and software-audited
-- [x] Gaia covariance vector, bit index, period confidence, flags, RV-transit counts, and blend diagnostics preserved
-- [x] Official SB1/SB1C `bit_index` validation and sparse fixed-length `corr_vec` decoding implemented
-- [x] Optional independent DPAC `nsstools` covariance-parity adapter implemented
-- [x] Correlation-aware physical Monte Carlo implemented with explicit covariance repair audit
-- [x] GSP-Phot gravity/radius inputs preserved for a triage-only M1 proxy
-- [x] Independent primary-mass consensus and tension diagnostics implemented
-- [x] Deterministic Gaia source-ID to DESI HEALPix file planner implemented
-- [x] Metadata-only DESI overlap probe and seed-density prioritization implemented
-- [x] Byte-bounded selective DESI downloader and row-aligned extractor implemented
-- [x] Close DESI exposures grouped into independent visits by default
-- [x] Within-visit disagreement inflates the visit RV uncertainty
-- [x] Fixed-Gaia-orbit versus constant-RV validation counts visits instead of raw spectra
-- [x] Robust bracketed Kepler solver passed the post-fix synthetic audit
-- [x] Edge-on minimum-mass Monte Carlo implemented
-- [x] Isotropic-inclination sensitivity product implemented and explicitly labelled
-- [x] Gaia-side WP5 blend, structure, contamination, and variability audit implemented
-- [x] Conservative one- versus two-component spectral evidence implemented and software-audited
-- [x] Conservative single- versus composite-SED evidence implemented and software-audited
-- [x] Explicit SIMBAD/VizieR/ADS novelty-coverage and precedence reduction implemented and software-audited
-- [x] Final claim-readiness state machine implemented and software-audited
-- [x] Duplicate-safe final evidence assembly implemented and passed post-fix CI
-- [x] Pseudonymized private candidate-card generator implemented; generated cards remain outside the public repository
-- [x] CI failure diagnostics are preserved as downloadable artifacts
-- [x] Encrypted public-runner relay preserves complete or partial source-level bundles without exposing rows
-- [ ] Gaia v7 asynchronous seed query successfully returned and immutably persisted
-- [ ] Live Gaia `corr_vec` serialization validated against DPAC reconstruction on returned rows
-- [ ] DESI overlap quantified from returned Gaia source IDs
-- [ ] First real independent multi-visit orbit-consistency score produced
-- [ ] Real source-level spectral, SED, hierarchy, stripped-star, independent-primary, and novelty audits completed
+- [x] Scientific target and claim boundaries frozen
+- [x] Public-code and encrypted-evidence repository policy established
+- [x] Immutable 5,000-source Gaia v9 cohort acquired
+- [x] Gaia covariance reconstructed and checked against the reference adapter
+- [x] Primary-mass and correlated minimum-mass inference completed with failure accounting
+- [x] Gaia-side blend/multiplicity audit completed
+- [x] Periastron Roche-geometry audit completed
+- [x] Dual Gaia–DESI identity paths implemented and live-service contracts validated
+- [x] All 453 verified non-backup DESI MWS files scanned through the DR2 REF_ID path
+- [x] DESI DR1 coverage-null result frozen with hashes and encrypted source-level bundle
+- [x] Primary-mass selection-bias audit completed
+- [x] Candidate-safe stage attrition and 54-configuration sensitivity reporting completed
+- [x] Manuscript questions, evidence stages, figures, tables, and interpretation matrix pre-registered
+- [ ] LAMOST DR8 multi-epoch catalogue acquired and release-aware Gaia identity contract validated
+- [ ] First real external multi-visit fixed-orbit score produced
+- [ ] Final source-level spectral/SED/hierarchy/stripped-star audits completed
 - [ ] Any source reaches `claim_audit_ready_not_classified`
+- [ ] Reproducible manuscript build and archived release bundle completed
 
-## Reproducible core run order
+## Reproducible DESI experiment
 
 ```bash
 python scripts/run_gaia_query.py \
   --mode async \
-  --query queries/gaia_sb1_contamination_pilot_v7.adql \
-  --output outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --execution-duration-seconds 3600 \
-  --wait-timeout-seconds 3600
+  --query queries/gaia_sb1_contamination_pilot_v9.adql \
+  --output outputs/gaia_seed.ecsv
 
-python scripts/audit_corr_vec_reference.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --output outputs/corr_vec_reference_audit.csv
+python scripts/query_desi_gaia_overlap.py \
+  outputs/gaia_seed.ecsv \
+  --output outputs/desi_gaia_exact_overlap.csv
 
-python scripts/prepare_primary_mass_priors.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --output outputs/primary_mass_priors.csv
+python scripts/query_gaia_dr2_bridge.py \
+  outputs/gaia_seed.ecsv \
+  --output outputs/gaia_dr2_bridge.csv
 
-python scripts/infer_mass_posteriors_correlated.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --primary-masses outputs/primary_mass_priors.csv \
-  --output outputs/mass_posteriors_correlated.csv
-
-python scripts/audit_gaia_contamination.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --output outputs/gaia_contamination_audit.csv
-
-python scripts/plan_desi_files.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  --output outputs/desi_single_epoch_plan.csv
-
-python scripts/probe_desi_files.py \
-  outputs/desi_single_epoch_plan.csv \
-  --output outputs/desi_probe.csv
-
-python scripts/prioritize_desi_probe.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
+python scripts/acquire_desi_epochs_exact.py \
+  outputs/gaia_seed.ecsv \
+  outputs/desi_gaia_exact_overlap.csv \
   outputs/desi_probe.csv \
-  --output outputs/desi_probe_prioritized.csv
+  --output outputs/desi_epochs_targetid.csv
 
-python scripts/acquire_desi_epochs.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  outputs/desi_probe_prioritized.csv \
-  --output outputs/desi_epochs.csv
-
-python scripts/score_orbit_consistency.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  outputs/desi_epochs.csv \
-  --output outputs/orbit_consistency.csv \
-  --min-clean-epochs 3 \
-  --maximum-visit-gap-hours 2
-
-python scripts/build_followup_triage.py \
-  outputs/gaia_sb1_contamination_pilot_v7.ecsv \
-  outputs/orbit_consistency.csv \
-  outputs/primary_mass_priors.csv \
-  outputs/mass_posteriors_correlated.csv \
-  --contamination outputs/gaia_contamination_audit.csv \
-  --output outputs/followup_triage.csv
+python scripts/acquire_desi_epochs_refid.py \
+  outputs/gaia_seed.ecsv \
+  outputs/gaia_dr2_bridge.csv \
+  outputs/desi_probe.csv \
+  --output outputs/desi_epochs_refid.csv
 ```
 
-Final source-level evidence is assembled separately from private spectral, SED, primary-star, alternative-hypothesis, and novelty tables:
+Population reporting:
 
 ```bash
-python scripts/build_claim_evidence.py \
+python scripts/summarize_followup_attrition.py \
   outputs/followup_triage.csv \
-  --evidence spectral=private/spectral_evidence.csv \
-  --evidence sed=private/sed_evidence.csv \
-  --evidence primary=private/independent_primary.csv \
-  --evidence alternatives=private/alternative_hypotheses.csv \
-  --evidence novelty=private/novelty_audit.csv \
-  --output private/merged_claim_evidence.csv
+  --output outputs/followup_attrition_summary.json
+
+python scripts/run_triage_sensitivity.py \
+  outputs/followup_triage.csv \
+  --output outputs/triage_sensitivity.csv
 ```
 
-See `docs/RESEARCH_PLAN.md`, `docs/DATA_CONTRACT.md`, `docs/WP2_DESI_FILE_PLAN.md`, `docs/WP3_ORBIT_VALIDATION_PROTOCOL.md`, `docs/WP4_MASS_INFERENCE_PROTOCOL.md`, `docs/WP5_CONTAMINANT_REJECTION_PROTOCOL.md`, `docs/WP6_CLAIM_READINESS_PROTOCOL.md`, `docs/WP6_NOVELTY_PROTOCOL.md`, `docs/WP6_EVIDENCE_ASSEMBLY.md`, and `audits/CI_HISTORY.md`.
+See `paper/HOU_COMPACT_I_ANALYSIS_PLAN.md` and the versioned protocols under `docs/`.
 
 ## Repository policy
 
-All code, queries, tests, experiment manifests, negative results, candidate revisions, and manuscript changes are versioned. Raw survey data and novelty-sensitive candidate cards are not committed to the public repository; immutable URLs, checksums, query text, and derived compact summaries are recorded instead. Candidate-sensitive evidence belongs in the private evidence vault.
+All code, queries, tests, manifests, negative results, candidate revisions, and manuscript changes are versioned. Raw survey files and novelty-sensitive source cards are not committed publicly. Candidate-sensitive source IDs, cross-survey identifiers, velocities, mass rows, and dossiers remain in encrypted evidence bundles whose checksums and candidate-safe summaries are preserved separately.
