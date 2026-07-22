@@ -63,6 +63,13 @@ def _local_path(cache_dir: Path, url: str) -> Path:
     return cache_dir / "rv_output" / relative
 
 
+def _truthy(series: pd.Series) -> pd.Series:
+    """Parse persisted boolean columns without treating the string 'False' as true."""
+    if pd.api.types.is_bool_dtype(series):
+        return series.fillna(False)
+    return series.astype(str).str.strip().str.lower().isin({"1", "true", "yes", "y"})
+
+
 def main() -> None:
     args = parse_args()
     if args.max_files < 1:
@@ -87,9 +94,9 @@ def main() -> None:
     if missing_probe:
         raise KeyError(f"probe table is missing columns: {missing_probe}")
     if "status" in probe.columns:
-        probe = probe.loc[probe["status"].isin(["exists", "ok", "200"])]
+        probe = probe.loc[probe["status"].astype(str).str.lower().isin(["exists", "ok", "200"])]
     if "exists" in probe.columns:
-        probe = probe.loc[probe["exists"].astype(bool)]
+        probe = probe.loc[_truthy(probe["exists"])]
     if "bytes" in probe.columns:
         numeric_bytes = pd.to_numeric(probe["bytes"], errors="coerce")
         probe = probe.loc[numeric_bytes.isna() | numeric_bytes.le(maximum_file_bytes)]
@@ -97,7 +104,7 @@ def main() -> None:
 
     gaia = gaia.copy()
     gaia["_desi_healpix"] = gaia["source_id"].map(
-        lambda value: source_id_to_healpix(int(value))
+        lambda value: source_id_to_healpix(int(value), level=6)
     )
     records: list[pd.DataFrame] = []
     downloads: list[dict[str, object]] = []
