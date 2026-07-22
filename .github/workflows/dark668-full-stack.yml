@@ -1,0 +1,299 @@
+name: dark668-full-stack
+
+on:
+  pull_request:
+    paths:
+      - "src/hou_compact/dark668*.py"
+      - "src/hou_compact/lamost*.py"
+      - "scripts/*dark668*.py"
+      - "scripts/acquire_lamost_tap_rv.py"
+      - "scripts/extract_lamost_dr8_overlap.py"
+      - "scripts/query_gaia_dr2_bridge.py"
+      - "tests/test_dark668*.py"
+      - "tests/test_lamost_tap_rv.py"
+      - "keys/hou_compact_relay_public.pem"
+      - ".github/workflows/dark668-full-stack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-full-stack-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-public-data-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        id: install
+        continue-on-error: true
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run focused deterministic tests
+        id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pytest -q \
+            tests/test_dark668.py \
+            tests/test_dark668_seed.py \
+            tests/test_dark668_coverage.py \
+            tests/test_dark668_lamost.py \
+            tests/test_dark668_rv.py \
+            tests/test_lamost_tap_rv.py
+
+      - name: Acquire frozen candidate catalogues and exact Gaia bridge
+        id: prepare
+        if: steps.install.outcome == 'success' && steps.tests.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p outputs/private data/raw/dark668
+          python scripts/acquire_dark668_catalogues.py \
+            --output-dir data/raw/dark668 \
+            --summary-output outputs/dark668_catalogue_summary.json
+          python scripts/prepare_dark668_seed.py \
+            --input-dir data/raw/dark668 \
+            --population all \
+            --output outputs/private/dark668_seed.csv \
+            --safe-summary outputs/dark668_seed_summary.json
+          python scripts/query_gaia_dr2_bridge.py \
+            outputs/private/dark668_seed.csv \
+            --output outputs/private/dark668_gaia_dr2_bridge.csv \
+            --neighbourhood-output outputs/private/dark668_gaia_dr2_neighbourhood.csv \
+            --batch-size 200 \
+            --maxrec-per-batch 4000 \
+            --overwrite \
+            > outputs/private/dark668_gaia_bridge.stdout.json
+
+      - name: Download official LAMOST DR8 multiple-epoch catalogue
+        id: download_mec
+        if: steps.prepare.outcome == 'success'
+        continue-on-error: true
+        run: |
+          mkdir -p data/raw/lamost
+          curl --fail --location \
+            --retry 5 --retry-delay 5 --retry-all-errors \
+            --connect-timeout 60 --max-time 2400 \
+            --output data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz \
+            'https://www.lamost.org/dr8/v1.0/catdl?name=dr8_v1.0_LRS_mec.csv.gz'
+          python - <<'PY'
+          import gzip
+          import hashlib
+          import json
+          from pathlib import Path
+
+          path = Path('data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz')
+          assert path.stat().st_size > 1024
+          with path.open('rb') as handle:
+              assert handle.read(2) == b'\x1f\x8b'
+          with gzip.open(path, 'rt', encoding='utf-8-sig') as handle:
+              header = set(handle.readline().strip().split(','))
+          required = {'gaia_source_id', 'obs_number', 'obsid_list', 'midmjm_list', 'rv_list'}
+          assert required.issubset(header)
+          payload = {
+              'candidate_safe': True,
+              'bytes': path.stat().st_size,
+              'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'verified_columns': sorted(required),
+          }
+          Path('outputs/lamost_mec_file_receipt.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True)
+          )
+          PY
+
+      - name: Extract exact Dark-668 LAMOST overlap
+        id: overlap
+        if: steps.download_mec.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/extract_lamost_dr8_overlap.py \
+            data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz \
+            outputs/private/dark668_gaia_dr2_bridge.csv \
+            --output outputs/private/dark668_lamost_epochs.csv \
+            --chunk-size 100000 \
+            > outputs/private/dark668_lamost_overlap.stdout.json
+
+      - name: Summarize cadence and raw RV coverage
+        id: coverage
+        if: steps.overlap.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/summarize_dark668_lamost_coverage.py \
+            outputs/private/dark668_seed.csv \
+            outputs/private/dark668_lamost_epochs.csv \
+            --output outputs/private/dark668_lamost_coverage.csv \
+            --safe-summary outputs/dark668_lamost_coverage_summary.json
+
+      - name: Acquire exact per-spectrum RV errors through LAMOST TAP
+        id: tap_rv
+        if: steps.overlap.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/acquire_lamost_tap_rv.py \
+            outputs/private/dark668_lamost_epochs.csv \
+            --output outputs/private/dark668_lamost_tap_rv.csv \
+            --safe-summary outputs/dark668_lamost_tap_rv_summary.json \
+            --batch-size 100 \
+            --maxrec-per-batch 250
+
+      - name: Join exact RV products and enforce quality gates
+        id: join_rv
+        if: steps.tap_rv.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/join_dark668_lamost_tap_rv.py \
+            outputs/private/dark668_lamost_epochs.csv \
+            outputs/private/dark668_lamost_tap_rv.csv \
+            --output outputs/private/dark668_lamost_scorable_epochs.csv \
+            --safe-summary outputs/dark668_lamost_join_summary.json \
+            --maximum-rv-difference-kms 1.0
+
+      - name: Run period-prior RV coherence triage
+        id: period_score
+        if: steps.join_rv.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/score_dark668_period_prior.py \
+            outputs/private/dark668_seed.csv \
+            outputs/private/dark668_lamost_scorable_epochs.csv \
+            --output outputs/private/dark668_period_prior_scores.csv \
+            --safe-summary outputs/dark668_period_prior_summary.json \
+            --minimum-visits 5 \
+            --period-grid-size 192 \
+            --permutations 99 \
+            --base-seed 20260723
+
+      - name: Build candidate-safe master receipt
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          DOWNLOAD_OUTCOME: ${{ steps.download_mec.outcome }}
+          OVERLAP_OUTCOME: ${{ steps.overlap.outcome }}
+          COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
+          TAP_RV_OUTCOME: ${{ steps.tap_rv.outcome }}
+          JOIN_OUTCOME: ${{ steps.join_rv.outcome }}
+          PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
+        run: |
+          mkdir -p outputs
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = [
+              'dark668_catalogue_summary.json',
+              'dark668_seed_summary.json',
+              'lamost_mec_file_receipt.json',
+              'dark668_lamost_coverage_summary.json',
+              'dark668_lamost_tap_rv_summary.json',
+              'dark668_lamost_join_summary.json',
+              'dark668_period_prior_summary.json',
+          ]
+          receipts = {}
+          for name in names:
+              path = Path('outputs') / name
+              if path.exists():
+                  receipts[name] = json.loads(path.read_text())
+          payload = {
+              'schema_version': '0.1',
+              'candidate_safe': True,
+              'repository': os.environ.get('GITHUB_REPOSITORY'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'steps': {
+                  'install': os.environ.get('INSTALL_OUTCOME'),
+                  'tests': os.environ.get('TESTS_OUTCOME'),
+                  'prepare': os.environ.get('PREPARE_OUTCOME'),
+                  'download_mec': os.environ.get('DOWNLOAD_OUTCOME'),
+                  'overlap': os.environ.get('OVERLAP_OUTCOME'),
+                  'coverage': os.environ.get('COVERAGE_OUTCOME'),
+                  'tap_rv': os.environ.get('TAP_RV_OUTCOME'),
+                  'join_rv': os.environ.get('JOIN_OUTCOME'),
+                  'period_score': os.environ.get('PERIOD_OUTCOME'),
+              },
+              'receipts': receipts,
+              'claim_boundary': (
+                  'A successful run produces a reproducible follow-up queue only. '
+                  'No source is classified as a binary, neutron star, black hole, '
+                  'or compact object without downstream full-orbit and contamination audits.'
+              ),
+          }
+          Path('outputs/dark668_full_stack_summary.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True)
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Encrypt all source-level evidence before upload
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p encrypted_output
+          if [[ -d outputs/private ]]; then
+            tar -C outputs/private -czf /tmp/dark668_full_stack_private.tar.gz .
+          else
+            mkdir -p /tmp/dark668_empty
+            printf '%s\n' 'No source-level output directory was produced.' \
+              > /tmp/dark668_empty/NO_SOURCE_OUTPUT.txt
+            tar -C /tmp/dark668_empty -czf /tmp/dark668_full_stack_private.tar.gz .
+          fi
+          openssl rand -hex 32 > /tmp/dark668_full_stack_passphrase.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -pass file:/tmp/dark668_full_stack_passphrase.txt \
+            -in /tmp/dark668_full_stack_private.tar.gz \
+            -out encrypted_output/dark668_full_stack_private.tar.gz.enc
+          openssl pkeyutl -encrypt \
+            -pubin \
+            -inkey keys/hou_compact_relay_public.pem \
+            -in /tmp/dark668_full_stack_passphrase.txt \
+            -out encrypted_output/dark668_full_stack_private.key.enc \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          cp outputs/dark668_full_stack_summary.json encrypted_output/
+          sha256sum encrypted_output/* > encrypted_output/SHA256SUMS
+          shred -u \
+            /tmp/dark668_full_stack_passphrase.txt \
+            /tmp/dark668_full_stack_private.tar.gz
+          rm -rf /tmp/dark668_empty outputs/private data/raw/dark668 data/raw/lamost
+
+      - name: Upload encrypted source-level evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-full-stack-encrypted-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: encrypted_output/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload candidate-safe receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-full-stack-safe-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: outputs/*.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Preserve failures after encrypted persistence
+        if: always()
+        run: |
+          test "${{ steps.install.outcome }}" = "success"
+          test "${{ steps.tests.outcome }}" = "success"
+          test "${{ steps.prepare.outcome }}" = "success"
+          test "${{ steps.download_mec.outcome }}" = "success"
+          test "${{ steps.overlap.outcome }}" = "success"
+          test "${{ steps.coverage.outcome }}" = "success"
+          test "${{ steps.tap_rv.outcome }}" = "success"
+          test "${{ steps.join_rv.outcome }}" = "success"
+          test "${{ steps.period_score.outcome }}" = "success"
