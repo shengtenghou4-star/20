@@ -1,10 +1,12 @@
-name: datalab-overlap-smoke
+name: cross-survey-identifier-smoke
 
 on:
   pull_request:
     paths:
       - "src/hou_compact/datalab.py"
+      - "src/hou_compact/gaia_dr2_bridge.py"
       - "scripts/probe_datalab_overlap_schema.py"
+      - "scripts/probe_gaia_dr2_bridge_schema.py"
       - ".github/workflows/datalab-overlap-smoke.yml"
   workflow_dispatch:
 
@@ -23,5 +25,7 @@ jobs:
           cache: pip
       - name: Install pipeline
         run: python -m pip install -e .
-      - name: Validate official Data Lab crossmatch join
+      - name: Validate official Data Lab Gaia-DESI crossmatch join
         run: python scripts/probe_datalab_overlap_schema.py
+      - name: Validate official Gaia DR3-to-DR2 neighbourhood schema
+        run: python scripts/probe_gaia_dr2_bridge_schema.py
