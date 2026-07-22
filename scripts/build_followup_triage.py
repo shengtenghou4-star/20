@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge Gaia, orbit, mass, and optional WP5 evidence into stage-gated triage."""
+"""Merge Gaia, orbit, mass, and WP5 evidence into stage-gated triage."""
 
 from __future__ import annotations
 
@@ -35,6 +35,11 @@ def parse_args() -> argparse.Namespace:
         "--contamination",
         type=Path,
         help="optional Gaia-side WP5 contamination audit keyed by source_id/solution_id",
+    )
+    parser.add_argument(
+        "--roche",
+        type=Path,
+        help="optional Roche-geometry audit keyed by source_id/solution_id",
     )
     parser.add_argument(
         "--output",
@@ -103,6 +108,15 @@ def main() -> None:
             name="contamination",
         )
 
+    roche: pd.DataFrame | None = None
+    if args.roche is not None:
+        roche = _rename_status_error(read_table(args.roche), "roche")
+        merged = _merge_non_overlapping(
+            merged,
+            roche,
+            name="roche",
+        )
+
     config = TriageConfig(
         min_period_confidence=args.min_period_confidence,
         min_clean_desi_epochs=args.min_clean_desi_epochs,
@@ -143,6 +157,11 @@ def main() -> None:
             "path": str(args.contamination),
             "sha256": sha256_file(args.contamination),
         }
+    if args.roche is not None:
+        input_manifest["roche"] = {
+            "path": str(args.roche),
+            "sha256": sha256_file(args.roche),
+        }
     manifest = {
         "inputs": input_manifest,
         "output": str(args.output),
@@ -150,6 +169,7 @@ def main() -> None:
         "output_rows": len(output),
         "stage_counts": stage_counts,
         "contamination_audit_merged": contamination is not None,
+        "roche_geometry_audit_merged": roche is not None,
         "thresholds": {
             "min_period_confidence": config.min_period_confidence,
             "min_clean_desi_epochs": config.min_clean_desi_epochs,
@@ -165,7 +185,9 @@ def main() -> None:
             ),
         },
         "interpretation_boundary": (
-            "Triage stages are follow-up priorities, not compact-object classifications."
+            "Triage stages are follow-up priorities, not compact-object classifications. "
+            "Roche consistency is necessary but not sufficient for a detached dark-companion "
+            "interpretation."
         ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
