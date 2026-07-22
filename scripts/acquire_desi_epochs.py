@@ -17,6 +17,7 @@ from hou_compact.desi import (
     extract_single_epoch_rows,
     source_id_to_healpix,
 )
+from hou_compact.desi_epoch_columns import restore_single_exposure_columns
 from hou_compact.gaia import sha256_file
 
 
@@ -138,6 +139,7 @@ def main() -> None:
             maximum_match_separation_arcsec=args.maximum_match_separation_arcsec,
             minimum_ambiguity_margin_arcsec=args.minimum_ambiguity_margin_arcsec,
         )
+        extracted = restore_single_exposure_columns(local, extracted)
         if not extracted.empty:
             files_with_matched_rows += 1
             records.append(extracted)
@@ -156,6 +158,7 @@ def main() -> None:
                 "targetid",
                 "expid",
                 "mjd",
+                "night",
                 "vrad",
                 "vrad_err",
                 "success",
@@ -171,6 +174,7 @@ def main() -> None:
                 "source_match_separation_arcsec",
                 "desi_ref_id",
                 "desi_ref_cat",
+                "official_epoch_columns_restored",
             ]
         )
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -183,6 +187,11 @@ def main() -> None:
         errors="coerce",
     )
     finite_separations = finite_separations.loc[finite_separations.map(math.isfinite)]
+    restored_rows = (
+        int(_truthy(epochs["official_epoch_columns_restored"]).sum())
+        if "official_epoch_columns_restored" in epochs.columns
+        else 0
+    )
     manifest = {
         "gaia_input": str(args.gaia),
         "gaia_input_sha256": sha256_file(args.gaia),
@@ -196,6 +205,7 @@ def main() -> None:
         "downloaded_bytes": total_bytes,
         "output_rows": len(epochs),
         "matched_source_count": matched_source_count,
+        "official_epoch_columns_restored_rows": restored_rows,
         "match_mode_counts": (
             {
                 str(key): int(value)
@@ -219,9 +229,9 @@ def main() -> None:
         },
         "downloads": downloads,
         "interpretation_boundary": (
-            "Rows are Gaia DR3 matches to DESI per-exposure RV products. Positional matches "
-            "use propagated Gaia coordinates and require downstream quality and duplicate "
-            "audits before orbit scoring."
+            "Rows are Gaia DR3 matches to DESI per-exposure RV products. MJD/NIGHT are "
+            "restored from FIBERMAP and SN_B/SN_R/SN_Z from RVTAB before downstream "
+            "quality and duplicate audits."
         ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
