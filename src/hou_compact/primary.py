@@ -1,8 +1,8 @@
-"""Preliminary primary-star mass proxies from Gaia GSP-Phot gravity and radius.
+"""Preliminary primary-star mass priors from Gaia GSP-Phot and FLAME.
 
-GSP-Phot parameters are inferred under a single-star assumption. Products from this
-module are triage priors only and must be replaced or validated with independent stellar
-characterization before any compact-object claim.
+Gaia astrophysical parameters are inferred under single-star assumptions. Products from
+this module are triage priors only and must be replaced or validated with independent
+stellar characterization before any compact-object claim.
 """
 
 from __future__ import annotations
@@ -24,6 +24,14 @@ class PrimaryMassSamples:
     mass_solar: np.ndarray
     logg_cgs: np.ndarray
     radius_solar: np.ndarray
+    random_seed: int
+
+
+@dataclass(frozen=True)
+class FlamePrimaryMassSamples:
+    """Monte Carlo samples reconstructed from Gaia FLAME mass percentiles."""
+
+    mass_solar: np.ndarray
     random_seed: int
 
 
@@ -99,6 +107,13 @@ def _draw_split_normal_from_16_50_84(
     raise RuntimeError(f"failed to draw positive {name} samples")
 
 
+def _validate_draw_settings(n_draws: int, random_seed: int) -> None:
+    if not isinstance(n_draws, int) or n_draws < 100:
+        raise ValueError("n_draws must be an integer of at least 100")
+    if not isinstance(random_seed, int) or random_seed < 0:
+        raise ValueError("random_seed must be a non-negative integer")
+
+
 def draw_gspphot_primary_mass(
     *,
     logg_median: float,
@@ -111,10 +126,7 @@ def draw_gspphot_primary_mass(
     random_seed: int = 0,
 ) -> PrimaryMassSamples:
     """Draw a diagonal GSP-Phot gravity-radius mass proxy distribution."""
-    if not isinstance(n_draws, int) or n_draws < 100:
-        raise ValueError("n_draws must be an integer of at least 100")
-    if not isinstance(random_seed, int) or random_seed < 0:
-        raise ValueError("random_seed must be a non-negative integer")
+    _validate_draw_settings(n_draws, random_seed)
     rng = np.random.default_rng(random_seed)
     logg = _draw_split_normal_from_16_50_84(
         rng,
@@ -142,30 +154,88 @@ def draw_gspphot_primary_mass(
     )
 
 
-def summarize_primary_mass(samples: PrimaryMassSamples) -> dict[str, object]:
-    """Return robust quantiles and a symmetric adapter error for downstream pilots."""
-    if samples.mass_solar.size == 0:
+def draw_flame_primary_mass(
+    *,
+    mass_median: float,
+    mass_lower: float,
+    mass_upper: float,
+    n_draws: int = 50_000,
+    random_seed: int = 0,
+) -> FlamePrimaryMassSamples:
+    """Draw a positive mass prior from Gaia FLAME 16/50/84 percentiles."""
+    _validate_draw_settings(n_draws, random_seed)
+    rng = np.random.default_rng(random_seed)
+    mass = _draw_split_normal_from_16_50_84(
+        rng,
+        mass_lower,
+        mass_median,
+        mass_upper,
+        n_draws,
+        name="mass_flame",
+        minimum=0.0,
+    )
+    return FlamePrimaryMassSamples(mass_solar=mass, random_seed=random_seed)
+
+
+def _mass_summary(
+    mass_solar: np.ndarray,
+    *,
+    random_seed: int,
+    method: str,
+    interpretation: str,
+) -> dict[str, object]:
+    if mass_solar.size == 0:
         raise ValueError("primary-mass samples are empty")
-    mass_quantiles = np.quantile(samples.mass_solar, _QUANTILES)
-    logg_quantiles = np.quantile(samples.logg_cgs, _QUANTILES)
-    radius_quantiles = np.quantile(samples.radius_solar, _QUANTILES)
+    if np.any(~np.isfinite(mass_solar)) or np.any(mass_solar <= 0):
+        raise ValueError("primary-mass samples must be finite and positive")
+    mass_quantiles = np.quantile(mass_solar, _QUANTILES)
     q16 = float(mass_quantiles[2])
     q50 = float(mass_quantiles[3])
     q84 = float(mass_quantiles[4])
     return {
-        "n_draws": int(samples.mass_solar.size),
-        "random_seed": samples.random_seed,
+        "n_draws": int(mass_solar.size),
+        "random_seed": random_seed,
         "quantiles": list(_QUANTILES),
         "mass_quantiles_solar": [float(value) for value in mass_quantiles],
-        "logg_quantiles_cgs": [float(value) for value in logg_quantiles],
-        "radius_quantiles_solar": [float(value) for value in radius_quantiles],
         "primary_mass_solar": q50,
         "primary_mass_error_solar": 0.5 * (q84 - q16),
         "primary_mass_lower_solar": q16,
         "primary_mass_upper_solar": q84,
         "fractional_68_width": (q84 - q16) / (2.0 * q50),
-        "method": "gaia_gspphot_logg_radius_diagonal_proxy",
-        "interpretation": (
-            "triage-only single-star-assumption proxy; independent validation required"
-        ),
+        "method": method,
+        "interpretation": interpretation,
     }
+
+
+def summarize_primary_mass(samples: PrimaryMassSamples) -> dict[str, object]:
+    """Return robust quantiles and a symmetric adapter error for GSP-Phot samples."""
+    summary = _mass_summary(
+        samples.mass_solar,
+        random_seed=samples.random_seed,
+        method="gaia_gspphot_logg_radius_diagonal_proxy",
+        interpretation=(
+            "triage-only GSP-Phot single-star-assumption proxy; independent validation required"
+        ),
+    )
+    summary["logg_quantiles_cgs"] = [
+        float(value) for value in np.quantile(samples.logg_cgs, _QUANTILES)
+    ]
+    summary["radius_quantiles_solar"] = [
+        float(value) for value in np.quantile(samples.radius_solar, _QUANTILES)
+    ]
+    return summary
+
+
+def summarize_flame_primary_mass(
+    samples: FlamePrimaryMassSamples,
+) -> dict[str, object]:
+    """Return robust quantiles for a Gaia FLAME primary-mass prior."""
+    return _mass_summary(
+        samples.mass_solar,
+        random_seed=samples.random_seed,
+        method="gaia_flame_mass_percentile_prior",
+        interpretation=(
+            "triage-only FLAME stellar-model prior under single-star assumptions; "
+            "independent validation required"
+        ),
+    )
