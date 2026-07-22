@@ -276,18 +276,18 @@ def query_desi_gaia_overlap(
     columns = list(_EXPECTED_COLUMNS)
     if not identifiers:
         return pd.DataFrame(columns=columns), []
-    requested = set(identifiers)
     frames: list[pd.DataFrame] = []
     receipts: list[DataLabBatchReceipt] = []
     for batch_index, start in enumerate(range(0, len(identifiers), config.batch_size)):
         batch = identifiers[start : start + config.batch_size]
+        batch_set = set(batch)
         sql = build_desi_gaia_overlap_sql(batch, survey=survey, programs=programs)
         text, attempts = execute_sync_csv_query(sql, config=config, opener=opener)
         frame = parse_desi_gaia_overlap_csv(text)
-        unexpected = sorted(set(frame["source_id"].astype(int)) - requested)
+        unexpected = sorted(set(frame["source_id"].astype(int)) - batch_set)
         if unexpected:
             raise DataLabQueryError(
-                f"Data Lab returned source IDs outside the request: {unexpected[:5]}"
+                f"Data Lab returned source IDs outside the current batch: {unexpected[:5]}"
             )
         if (frame["match_distance_arcsec"] > 1.5 + 1e-9).any():
             raise DataLabQueryError("official 1.5-arcsec table returned a larger distance")
