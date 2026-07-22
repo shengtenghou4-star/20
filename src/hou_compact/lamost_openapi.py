@@ -188,6 +188,39 @@ def extract_tap_urls(payload: Any) -> list[str]:
     return sorted(urls)
 
 
+def api_error_summary(payload: Any) -> dict[str, str] | None:
+    """Recognize APIs that encode an error object inside HTTP 200."""
+
+    if not isinstance(payload, dict):
+        return None
+    error = payload.get("error")
+    description = payload.get("description")
+    if error is None and description is None:
+        return None
+    combined = f"{error or ''} {description or ''}".lower()
+    if not any(token in combined for token in ("error", "bad request", "token")):
+        return None
+    return {
+        "error": str(error or ""),
+        "description": str(description or "")[:500],
+    }
+
+
+def release_records(payload: Any) -> list[dict[str, Any]]:
+    """Find version records without depending on a single wrapper shape."""
+
+    records: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        if {"dr_version", "sub_version"}.issubset(payload):
+            records.append(payload)
+        for value in payload.values():
+            records.extend(release_records(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            records.extend(release_records(value))
+    return records
+
+
 def discover_openapi_contract(
     *,
     openapi_root: str = DEFAULT_OPENAPI_ROOT,
@@ -197,7 +230,13 @@ def discover_openapi_contract(
     retries: int = 2,
     maximum_response_bytes: int = 16 * 1024 * 1024,
 ) -> dict[str, object]:
-    """Verify public release, table metadata, and the official TAP endpoint."""
+    """Verify the public release and discover its authoritative TAP endpoint.
+
+    LAMOST's ``/tables`` endpoint currently returns an HTTP-200 error object for an
+    anonymous DR8 request.  That endpoint is therefore retained as provenance but is
+    not treated as authoritative.  Table and column metadata are verified through
+    the IVOA TAP endpoint returned by ``/voservice/tap_url``.
+    """
 
     root = openapi_root.rstrip("/")
     if not root.startswith("https://"):
@@ -218,53 +257,62 @@ def discover_openapi_contract(
             maximum_response_bytes=maximum_response_bytes,
         )
 
-    version_text = " ".join(iter_scalars(payloads["versions"])).lower()
-    if dr_version.lower() not in version_text or sub_version.lower() not in version_text:
+    matching_releases = [
+        record
+        for record in release_records(payloads["versions"])
+        if str(record.get("dr_version", "")).lower() == dr_version.lower()
+        and str(record.get("sub_version", "")).lower() == sub_version.lower()
+    ]
+    if not matching_releases:
         raise LAMOSTOpenAPIError(
             f"{dr_version}/{sub_version} absent from public version metadata"
         )
-
-    table_text = " ".join(iter_scalars(payloads["tables"])).lower()
-    missing_columns = [
-        column
-        for column in REQUIRED_MULTIEPOCH_COLUMNS
-        if column not in table_text
-    ]
-    if missing_columns:
+    public_statuses = {
+        str(record.get("public_status", "")).strip().lower()
+        for record in matching_releases
+    }
+    if public_statuses and public_statuses != {"public"}:
         raise LAMOSTOpenAPIError(
-            f"LAMOST table metadata is missing required columns: {missing_columns}"
-        )
-    nodes = candidate_metadata_nodes(payloads["tables"])
-    if not nodes:
-        raise LAMOSTOpenAPIError(
-            "no multiple-epoch table metadata node was discovered"
+            f"{dr_version}/{sub_version} is not marked public: {sorted(public_statuses)}"
         )
 
+    tap_error = api_error_summary(payloads["tap"])
+    if tap_error is not None:
+        raise LAMOSTOpenAPIError(f"TAP discovery endpoint failed: {tap_error}")
     tap_urls = extract_tap_urls(payloads["tap"])
     if not tap_urls:
         raise LAMOSTOpenAPIError(
             "OpenAPI did not return an HTTPS TAP service URL"
         )
 
+    tables_error = api_error_summary(payloads["tables"])
     summaries: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for node in nodes:
-        summary = safe_metadata_summary(node)
-        key = json.dumps(summary, sort_keys=True, default=str)
-        if key not in seen:
-            seen.add(key)
-            summaries.append(summary)
+    if tables_error is None:
+        nodes = candidate_metadata_nodes(payloads["tables"])
+        seen: set[str] = set()
+        for node in nodes:
+            summary = safe_metadata_summary(node)
+            key = json.dumps(summary, sort_keys=True, default=str)
+            if key not in seen:
+                seen.add(key)
+                summaries.append(summary)
 
     return {
         "status": "pass",
         "release": f"{dr_version}/{sub_version}",
+        "public_status": "public",
         "openapi_root": root,
         "receipts": {
             name: receipt.to_record() for name, receipt in receipts.items()
         },
-        "required_columns": sorted(REQUIRED_MULTIEPOCH_COLUMNS),
+        "release_records": matching_releases,
+        "openapi_tables_status": (
+            "http_200_api_error" if tables_error is not None else "available"
+        ),
+        "openapi_tables_error": tables_error,
         "candidate_metadata_nodes": summaries[:20],
         "tap_urls": tap_urls,
+        "required_columns_for_tap_validation": sorted(REQUIRED_MULTIEPOCH_COLUMNS),
         "claim_boundary": (
             "This probe accesses public metadata only. It returns no source rows, "
             "Gaia identifiers, radial velocities, or candidate classifications."
