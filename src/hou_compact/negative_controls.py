@@ -1,15 +1,13 @@
 """Deterministic negative controls for Gaia–DESI fixed-orbit validation.
 
-The controls test whether apparent orbit support exceeds chance phase alignment and
-whether the fitted one-parameter cross-survey velocity offset behaves as intended.
-Aggregate summaries are candidate-safe; source-level scored tables remain private.
+The controls test chance phase alignment and the fitted additive velocity-offset
+contract. Public products are aggregate-only; source-level scores remain private.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 
 import numpy as np
@@ -20,7 +18,7 @@ from hou_compact.validation import score_orbit_consistency
 
 @dataclass(frozen=True)
 class OrbitScoreThresholds:
-    """Frozen descriptive thresholds used by the control summaries."""
+    """Frozen descriptive thresholds used by control summaries."""
 
     delta_chi2: tuple[float, ...] = (4.0, 9.0, 16.0)
     maximum_reduced_chi2: float = 5.0
@@ -28,13 +26,17 @@ class OrbitScoreThresholds:
     minimum_clean_visits: int = 3
 
     def __post_init__(self) -> None:
-        if not self.delta_chi2 or any(
+        invalid_delta = any(
             not math.isfinite(value) or value < 0 for value in self.delta_chi2
-        ):
+        )
+        if not self.delta_chi2 or invalid_delta:
             raise ValueError("delta_chi2 thresholds must be finite and non-negative")
         if tuple(sorted(set(self.delta_chi2))) != self.delta_chi2:
             raise ValueError("delta_chi2 thresholds must be strictly increasing")
-        if not math.isfinite(self.maximum_reduced_chi2) or self.maximum_reduced_chi2 <= 0:
+        if (
+            not math.isfinite(self.maximum_reduced_chi2)
+            or self.maximum_reduced_chi2 <= 0
+        ):
             raise ValueError("maximum_reduced_chi2 must be finite and positive")
         if not 0 <= self.minimum_phase_coverage <= 1:
             raise ValueError("minimum_phase_coverage must lie in [0, 1]")
@@ -62,12 +64,7 @@ def phase_scramble_gaia_rows(
     repetition: int,
     base_seed: int = 20260722,
 ) -> pd.DataFrame:
-    """Shift every orbit by an independent deterministic random phase.
-
-    Period, eccentricity, omega, and K1 remain unchanged. Only the relative Gaia
-    periastron epoch is shifted uniformly over one full period, preserving each
-    system's cadence and amplitude while destroying the published phase relation.
-    """
+    """Shift every orbit by an independent deterministic random phase."""
     required = {"source_id", "solution_id", "period", "t_periastron"}
     missing = sorted(required - set(gaia_rows.columns))
     if missing:
@@ -123,9 +120,8 @@ def add_deterministic_source_offsets(
         offsets[source_id] = float(
             np.random.default_rng(seed).normal(0.0, offset_sigma_kms)
         )
-    result["vrad"] = pd.to_numeric(result["vrad"], errors="raise") + result[
-        "source_id"
-    ].map(offsets)
+    velocities = pd.to_numeric(result["vrad"], errors="raise")
+    result["vrad"] = velocities + result["source_id"].map(offsets)
     return result
 
 
@@ -143,17 +139,16 @@ def _eligible_scored_mask(
     missing = sorted(required - set(scores.columns))
     if missing:
         raise KeyError(f"score table is missing columns: {missing}")
+    visits = pd.to_numeric(scores["n_clean_epochs"], errors="coerce")
+    coverage = pd.to_numeric(scores["phase_coverage"], errors="coerce")
+    reduced_chi2 = pd.to_numeric(
+        scores["orbit_reduced_chi2"], errors="coerce"
+    )
     return (
         scores["status"].eq("scored")
-        & pd.to_numeric(scores["n_clean_epochs"], errors="coerce").ge(
-            thresholds.minimum_clean_visits
-        )
-        & pd.to_numeric(scores["phase_coverage"], errors="coerce").ge(
-            thresholds.minimum_phase_coverage
-        )
-        & pd.to_numeric(scores["orbit_reduced_chi2"], errors="coerce").le(
-            thresholds.maximum_reduced_chi2
-        )
+        & visits.ge(thresholds.minimum_clean_visits)
+        & coverage.ge(thresholds.minimum_phase_coverage)
+        & reduced_chi2.le(thresholds.maximum_reduced_chi2)
     )
 
 
@@ -186,11 +181,7 @@ def run_phase_scramble_control(
     thresholds: OrbitScoreThresholds = OrbitScoreThresholds(),
     scorer_kwargs: dict[str, object] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, object]]:
-    """Run the observed score and a phase-scrambled null ensemble.
-
-    The returned dataframe contains aggregate counts per repetition only. It has no
-    source identifiers or row-level velocities.
-    """
+    """Run the observed score and an aggregate phase-scrambled null ensemble."""
     if repetitions < 1:
         raise ValueError("repetitions must be positive")
     kwargs = dict(scorer_kwargs or {})
@@ -227,6 +218,15 @@ def run_phase_scramble_control(
         exceedances = int(null[column].ge(int(observed_count)).sum())
         empirical[key] = (1.0 + exceedances) / (1.0 + repetitions)
 
+    ranges = {
+        column: {
+            "minimum": int(null[column].min()),
+            "median": float(null[column].median()),
+            "maximum": int(null[column].max()),
+        }
+        for column in null.columns
+        if column.startswith("delta_chi2_")
+    }
     summary = {
         "schema_version": "0.1",
         "candidate_safe": True,
@@ -234,19 +234,11 @@ def run_phase_scramble_control(
         "base_seed": base_seed,
         "thresholds": asdict(thresholds),
         "observed": observed,
-        "null_count_ranges": {
-            column: {
-                "minimum": int(null[column].min()),
-                "median": float(null[column].median()),
-                "maximum": int(null[column].max()),
-            }
-            for column in null.columns
-            if column.startswith("delta_chi2_")
-        },
+        "null_count_ranges": ranges,
         "empirical_tail_probabilities": empirical,
         "interpretation_boundary": (
-            "The phase-scramble control tests chance phase alignment at fixed cadence and "
-            "orbit amplitude. It is an aggregate diagnostic, not a compact-object test."
+            "The phase-scramble control tests chance phase alignment at fixed cadence "
+            "and orbit amplitude. It is not a compact-object test."
         ),
     }
     return null, summary
@@ -271,16 +263,15 @@ def audit_systemic_offset_invariance(
         base_seed=base_seed,
     )
     shifted = score_orbit_consistency(gaia_rows, shifted_epochs, **kwargs)
-    key = ["source_id", "solution_id"]
     merged = baseline.merge(
         shifted,
-        on=key,
+        on=["source_id", "solution_id"],
         suffixes=("_baseline", "_shifted"),
         validate="one_to_one",
     )
-    comparable = merged[
-        "status_baseline"
-    ].eq("scored") & merged["status_shifted"].eq("scored")
+    comparable = merged["status_baseline"].eq("scored") & merged[
+        "status_shifted"
+    ].eq("scored")
     fields = (
         "constant_chi2",
         "orbit_chi2",
@@ -290,12 +281,13 @@ def audit_systemic_offset_invariance(
     maximum_differences: dict[str, float] = {}
     failures = 0
     for field in fields:
-        difference = (
-            pd.to_numeric(merged.loc[comparable, f"{field}_baseline"], errors="coerce")
-            - pd.to_numeric(
-                merged.loc[comparable, f"{field}_shifted"], errors="coerce"
-            )
-        ).abs()
+        baseline_values = pd.to_numeric(
+            merged.loc[comparable, f"{field}_baseline"], errors="coerce"
+        )
+        shifted_values = pd.to_numeric(
+            merged.loc[comparable, f"{field}_shifted"], errors="coerce"
+        )
+        difference = (baseline_values - shifted_values).abs()
         maximum = float(difference.max()) if not difference.empty else 0.0
         maximum_differences[field] = maximum
         failures += int(difference.gt(tolerance).sum())
@@ -308,7 +300,7 @@ def audit_systemic_offset_invariance(
         "values_above_tolerance": failures,
         "status": "pass" if failures == 0 else "failure",
         "interpretation_boundary": (
-            "This audit verifies the intended additive systemic-velocity nuisance model; "
-            "it does not test astrophysical source identity or compact-object status."
+            "This audit verifies the additive systemic-velocity nuisance model; it "
+            "does not test source identity or compact-object status."
         ),
     }
