@@ -92,9 +92,9 @@ def main() -> None:
     overlap = _normalize_file_columns(read_table(args.overlap), "overlap")
     availability = _normalize_file_columns(read_table(args.availability), "availability")
     required_overlap = {"source_id", "targetid", "match_distance_arcsec"}
-    missing_overlap = sorted(required_overlap - set(overlap.columns))
-    if missing_overlap:
-        raise KeyError(f"overlap is missing columns: {missing_overlap}")
+    missing_overlap_columns = sorted(required_overlap - set(overlap.columns))
+    if missing_overlap_columns:
+        raise KeyError(f"overlap is missing columns: {missing_overlap_columns}")
     if "source_id" not in gaia.columns:
         raise KeyError("Gaia table has no source_id column")
     overlap["source_id"] = pd.to_numeric(overlap["source_id"], errors="raise").astype("int64")
@@ -122,22 +122,27 @@ def main() -> None:
 
     target_counts = (
         overlap.groupby(_FILE_KEY, as_index=False)
-        .agg(exact_target_count=("targetid", "nunique"), exact_source_count=("source_id", "nunique"))
+        .agg(
+            exact_target_count=("targetid", "nunique"),
+            exact_source_count=("source_id", "nunique"),
+        )
     )
-    exact_files = target_counts.merge(
+    file_join = target_counts.merge(
         availability[_FILE_KEY + ["url"]],
         on=_FILE_KEY,
         how="left",
         validate="one_to_one",
         indicator=True,
     )
-    missing_files = exact_files.loc[exact_files["_merge"].ne("both"), _FILE_KEY]
-    if not missing_files.empty:
-        preview = missing_files.head(5).to_dict(orient="records")
-        raise ValueError(
-            f"{len(missing_files)} exact-overlap files are absent from verified availability: {preview}"
-        )
-    exact_files = exact_files.drop(columns="_merge").sort_values(
+    unavailable_keys = file_join.loc[file_join["_merge"].ne("both"), _FILE_KEY].copy()
+    unavailable_overlap = overlap.merge(
+        unavailable_keys,
+        on=_FILE_KEY,
+        how="inner",
+        validate="many_to_one",
+    )
+    exact_files = file_join.loc[file_join["_merge"].eq("both")].drop(columns="_merge")
+    exact_files = exact_files.sort_values(
         ["exact_source_count", "exact_target_count", "survey", "program", "healpix"],
         ascending=[False, False, True, True, True],
         kind="stable",
@@ -170,6 +175,7 @@ def main() -> None:
         total_bytes += int(result["bytes"])
         result.update(
             {
+                "sha256": sha256_file(local),
                 "survey": str(file_row["survey"]),
                 "program": str(file_row["program"]),
                 "healpix": int(file_row["healpix"]),
@@ -239,6 +245,11 @@ def main() -> None:
         "exact_overlap_source_count": int(overlap["source_id"].nunique()),
         "exact_overlap_target_count": int(overlap["targetid"].nunique()),
         "exact_overlap_file_count": len(target_counts),
+        "exact_files_with_verified_rv_product": int(file_join["_merge"].eq("both").sum()),
+        "exact_files_without_verified_rv_product": len(unavailable_keys),
+        "exact_sources_without_verified_rv_product": int(
+            unavailable_overlap["source_id"].nunique()
+        ),
         "files_selected": len(exact_files),
         "files_downloaded": len(downloads),
         "files_with_matched_rows": files_with_rows,
@@ -268,8 +279,9 @@ def main() -> None:
         },
         "downloads": downloads,
         "interpretation_boundary": (
-            "Rows are extracted by exact DESI TARGETID from the official Data Lab Gaia/zpix "
-            "crossmatch. They remain measurements, not orbit support or compact-object labels."
+            "An exact zpix overlap without a verified MWS RV file is preserved as an "
+            "availability null, not treated as a pipeline error. Extracted rows use exact "
+            "DESI TARGETIDs and remain measurements, not compact-object labels."
         ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
