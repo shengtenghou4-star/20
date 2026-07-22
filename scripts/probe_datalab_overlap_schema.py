@@ -16,7 +16,7 @@ from hou_compact.datalab import (
 
 
 def main() -> None:
-    sql = f"""SELECT
+    sql = f"""SELECT TOP 1
     x.id1 AS source_id,
     z.targetid AS targetid,
     z.survey AS survey,
@@ -26,8 +26,7 @@ def main() -> None:
 FROM {GAIA_DESI_XMATCH_TABLE} AS x
 JOIN {DESI_ZPIX_TABLE} AS z ON x.id2 = z.id
 WHERE z.survey = 'main'
-  AND z.program IN ('bright','dark')
-LIMIT 1"""
+  AND z.program IN ('bright','dark')"""
     text, attempts = execute_sync_csv_query(
         sql,
         config=DataLabQueryConfig(timeout_seconds=120.0, retries=2),
