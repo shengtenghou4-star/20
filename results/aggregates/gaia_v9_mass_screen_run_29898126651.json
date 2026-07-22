@@ -1,0 +1,63 @@
+{
+  "schema_version": "0.1",
+  "candidate_safe": true,
+  "source_relay_run_id": "29898126651",
+  "source_query_version": "v9",
+  "source_pipeline_commit": "6259995a765eb6640eab925080fa43472eaaef50",
+  "source_products": {
+    "gaia_seed_sha256": "e3011c1a097d46d8ef04c1ae1e1b81f116c05392fc6c2d4ffa7470f23f3b005f",
+    "primary_mass_sha256": "db91334c9c9aa9827de7a402404fa17e3c33507ea8cb42016bbb3212a39cd144",
+    "correlated_mass_sha256": "a13031d1439a836c3f4e07f800164977b6d3d800b04fac1707c8b9ae5a9686ae"
+  },
+  "cohort": {
+    "gaia_sources": 5000,
+    "primary_mass_scored": 2283,
+    "primary_mass_input_error": 2717,
+    "mass_posterior_scored": 2283,
+    "gaia_quality_passed_among_scored": 2078
+  },
+  "minimum_companion_mass_q16_distribution_solar": {
+    "count": 2283,
+    "mean": 2.111231,
+    "median": 1.855784,
+    "percentile_75": 2.442686,
+    "percentile_90": 3.160111,
+    "percentile_95": 3.909089,
+    "percentile_99": 7.091740,
+    "maximum": 20.551117
+  },
+  "threshold_counts_all_scored": {
+    "q16_ge_1p4_solar": 1770,
+    "q16_ge_3_solar": 284,
+    "q16_ge_5_solar": 57,
+    "q16_ge_8_solar": 16
+  },
+  "threshold_counts_gaia_quality_passed": {
+    "q16_ge_1p4_solar": 1644,
+    "q16_ge_3_solar": 270,
+    "q16_ge_5_solar": 52,
+    "q16_ge_8_solar": 13
+  },
+  "threshold_counts_gaia_quality_passed_without_high_risk_gaia_contamination_signal": {
+    "q16_ge_1p4_solar": 1290,
+    "q16_ge_3_solar": 200,
+    "q16_ge_5_solar": 43,
+    "q16_ge_8_solar": 12
+  },
+  "q16_ge_3_gaia_quality_passed_without_high_risk_signal_summary": {
+    "rows": 200,
+    "minimum_mass_q16_median_solar": 3.662819,
+    "minimum_mass_q16_percentile_90_solar": 6.598970,
+    "minimum_mass_q16_percentile_95_solar": 8.183908,
+    "minimum_mass_q16_maximum_solar": 20.551117,
+    "gaia_orbit_significance_median": 40.158974,
+    "gaia_good_rv_epochs_median": 20.0,
+    "primary_mass_fractional_68_width_median": 0.027180
+  },
+  "desi_independent_validation": {
+    "extracted_epoch_rows": 0,
+    "orbit_scores": 0,
+    "interpretation": "No system in this aggregate has independent DESI orbit support."
+  },
+  "interpretation_boundary": "These are Gaia-derived minimum-mass screening aggregates under Gaia orbital and single-star primary-mass assumptions. 'Without high-risk signal' only means the available Gaia-side contamination audit did not emit its strongest blend/multiplicity category; it is not a clean-candidate classification. Spectral multiplicity, composite SED, hierarchical triple, stripped-star, literature novelty, and independent orbit gates remain unresolved. The 2717 primary-mass input errors are missing-information cases, not negative astrophysical evidence. No source identifiers are included."
+}
