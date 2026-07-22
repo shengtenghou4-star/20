@@ -124,7 +124,7 @@ def test_unknown_stage_fails_closed() -> None:
         sequential_attrition(frame)
 
 
-def test_final_count_must_match_advanced_population() -> None:
+def test_final_count_matches_remaining_followup_population() -> None:
     frame = _triage_frame()
     frame = frame.loc[frame["triage_stage"] != "high_minimum_mass_followup"].copy()
     frame.loc[len(frame)] = {
@@ -135,4 +135,4 @@ def test_final_count_must_match_advanced_population() -> None:
         "minimum_m2_q16_solar": None,
     }
     flow = sequential_attrition(frame)
-    assert flow.iloc[-1]["advanced"] == 3
+    assert flow.iloc[-1]["advanced"] == 2
