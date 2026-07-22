@@ -126,23 +126,19 @@ def build_desi_gaia_overlap_sql(
     program_literals = _validated_sql_literals(programs, name="programs")
     identifier_list = ",".join(str(value) for value in identifiers)
     program_list = ",".join(f"'{value}'" for value in program_literals)
-    return "\n".join(
-        [
-            "SELECT",
-            "    x.id1 AS source_id,",
-            "    z.targetid AS targetid,",
-            "    z.survey AS survey,",
-            "    z.program AS program,",
-            "    z.healpix AS healpix,",
-            "    x.distance AS match_distance_arcsec",
-            f"FROM {GAIA_DESI_XMATCH_TABLE} AS x",
-            f"JOIN {DESI_ZPIX_TABLE} AS z ON x.id2 = z.id",
-            f"WHERE x.id1 IN ({identifier_list})",
-            f"  AND z.survey = '{survey_literal}'",
-            f"  AND z.program IN ({program_list})",
-            "ORDER BY x.id1, z.survey, z.program, z.healpix, z.targetid",
-        ]
-    )
+    return f"""SELECT
+    x.id1 AS source_id,
+    z.targetid AS targetid,
+    z.survey AS survey,
+    z.program AS program,
+    z.healpix AS healpix,
+    x.distance AS match_distance_arcsec
+FROM {GAIA_DESI_XMATCH_TABLE} AS x
+JOIN {DESI_ZPIX_TABLE} AS z ON x.id2 = z.id
+WHERE x.id1 IN ({identifier_list})
+  AND z.survey = '{survey_literal}'
+  AND z.program IN ({program_list})
+ORDER BY x.id1, z.survey, z.program, z.healpix, z.targetid"""
 
 
 def _query_url(config: DataLabQueryConfig, sql: str) -> str:
