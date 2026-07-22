@@ -34,12 +34,13 @@ def _epochs(source_id: int, mjd: np.ndarray, velocity: np.ndarray) -> pd.DataFra
     )
 
 
-def test_kepler_solver_satisfies_equation_at_high_eccentricity() -> None:
-    mean = np.linspace(-np.pi, np.pi, 101)
+def test_kepler_solver_satisfies_equation_modulo_full_revolutions() -> None:
+    mean = np.linspace(-3.0 * np.pi, 3.0 * np.pi, 301)
     eccentricity = 0.92
     eccentric = solve_kepler_equation(mean, eccentricity)
     residual = eccentric - eccentricity * np.sin(eccentric) - mean
-    assert np.max(np.abs(residual)) < 1e-10
+    wrapped_residual = np.remainder(residual + np.pi, 2.0 * np.pi) - np.pi
+    assert np.max(np.abs(wrapped_residual)) < 1e-10
 
 
 def test_circular_limit_matches_cosine_form() -> None:
