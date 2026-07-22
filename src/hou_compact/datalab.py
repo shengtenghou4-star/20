@@ -1,9 +1,8 @@
 """Exact Gaia DR3 to DESI DR1 zpix overlap queries through NOIRLab Data Lab.
 
-The public DESI per-HEALPix file layout only proves that a sky cell contains some
-spectra; it does not prove that a particular Gaia source was observed.  This module
-uses Data Lab's official 1.5-arcsec nearest-neighbour crossmatch and joins it to
-``desi_dr1.zpix`` so downstream extraction can use exact DESI TARGETIDs.
+A DESI file existing in the same HEALPix cell does not prove that a Gaia source was
+observed. This module queries Data Lab's precomputed Gaia DR3↔DESI DR1 zpix
+crossmatch and returns exact DESI TARGETIDs for downstream epoch extraction.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-DATALAB_QUERY_SERVICE = "https://datalab.noirlab.edu/query"
+DATALAB_QUERY_SERVICE = "https://datalab.noirlab.edu"
 DATALAB_ANONYMOUS_TOKEN = "anonymous.0.0.anon_access"
 GAIA_DESI_XMATCH_TABLE = "gaia_dr3.x1p5__gaia_source__desi_dr1__zpix"
 DESI_ZPIX_TABLE = "desi_dr1.zpix"
@@ -95,16 +94,24 @@ def _validated_source_ids(source_ids: Iterable[int]) -> list[int]:
         except (TypeError, ValueError) as error:
             raise TypeError(f"invalid Gaia source ID: {raw!r}") from error
         if value < 0 or value > 2**63 - 1:
-            raise ValueError(f"Gaia source ID outside signed 64-bit range: {value}")
+            raise ValueError(
+                f"Gaia source ID outside signed 64-bit range: {value}"
+            )
         values.add(value)
     return sorted(values)
 
 
-def _validated_sql_literals(values: Sequence[str], *, name: str) -> tuple[str, ...]:
+def _validated_sql_literals(
+    values: Sequence[str],
+    *,
+    name: str,
+) -> tuple[str, ...]:
     normalized = tuple(dict.fromkeys(str(value).strip() for value in values))
     if not normalized:
         raise ValueError(f"{name} must not be empty")
-    unsafe = [value for value in normalized if not _SAFE_SQL_LITERAL.fullmatch(value)]
+    unsafe = [
+        value for value in normalized if not _SAFE_SQL_LITERAL.fullmatch(value)
+    ]
     if unsafe:
         raise ValueError(f"unsafe {name} SQL literal(s): {unsafe}")
     return normalized
@@ -149,12 +156,13 @@ def _query_url(config: DataLabQueryConfig, sql: str) -> str:
             "sql": sql,
             "ofmt": "csv",
             "out": "",
-            "async": "False",
-            "drop": "False",
+            "async_": "False",
             "profile": config.profile,
         }
     )
-    return f"{config.service_url.rstrip('/')}/query?{parameters}"
+    root = config.service_url.rstrip("/")
+    endpoint = root if root.endswith("/query") else f"{root}/query"
+    return f"{endpoint}?{parameters}"
 
 
 def _request_headers(config: DataLabQueryConfig) -> dict[str, str]:
@@ -197,7 +205,7 @@ def execute_sync_csv_query(
     config: DataLabQueryConfig = DataLabQueryConfig(),
     opener: Callable[..., Any] = urlopen,
 ) -> tuple[str, int]:
-    """Execute one bounded anonymous synchronous SQL query and return CSV plus attempts."""
+    """Execute one bounded anonymous SELECT query and return CSV plus attempts."""
     if not sql.strip().lower().startswith("select"):
         raise ValueError("only SELECT queries are permitted")
     request = Request(_query_url(config, sql), headers=_request_headers(config))
@@ -208,13 +216,18 @@ def execute_sync_csv_query(
                 status = int(getattr(response, "status", 200))
                 if status != 200:
                     raise DataLabQueryError(f"Data Lab returned HTTP {status}")
-                body = _response_body(response, config.maximum_response_bytes)
+                body = _response_body(
+                    response,
+                    config.maximum_response_bytes,
+                )
             return _validate_csv_payload(body), attempt + 1
         except HTTPError as error:
             last_error = error
             retryable = error.code == 429 or error.code >= 500
             if not retryable or attempt >= config.retries:
-                raise DataLabQueryError(f"Data Lab HTTP error {error.code}") from error
+                raise DataLabQueryError(
+                    f"Data Lab HTTP error {error.code}"
+                ) from error
         except (URLError, TimeoutError, OSError, DataLabQueryError) as error:
             last_error = error
             if isinstance(error, DataLabQueryError) or attempt >= config.retries:
@@ -233,7 +246,9 @@ def parse_desi_gaia_overlap_csv(text: str) -> pd.DataFrame:
     frame.columns = [str(column).strip().lower() for column in frame.columns]
     missing = sorted(set(_EXPECTED_COLUMNS) - set(frame.columns))
     if missing:
-        raise DataLabQueryError(f"Data Lab response is missing columns: {missing}")
+        raise DataLabQueryError(
+            f"Data Lab response is missing columns: {missing}"
+        )
     frame = frame.loc[:, list(_EXPECTED_COLUMNS)].copy()
     if frame.empty:
         return frame.astype(
@@ -252,7 +267,8 @@ def parse_desi_gaia_overlap_csv(text: str) -> pd.DataFrame:
             raise DataLabQueryError(f"non-integral value in {name}")
         frame[name] = numeric.astype("int64")
     frame["match_distance_arcsec"] = pd.to_numeric(
-        frame["match_distance_arcsec"], errors="raise"
+        frame["match_distance_arcsec"],
+        errors="raise",
     ).astype(float)
     if not frame["match_distance_arcsec"].map(math.isfinite).all():
         raise DataLabQueryError("non-finite crossmatch distance returned")
@@ -271,26 +287,39 @@ def query_desi_gaia_overlap(
     config: DataLabQueryConfig = DataLabQueryConfig(),
     opener: Callable[..., Any] = urlopen,
 ) -> tuple[pd.DataFrame, list[DataLabBatchReceipt]]:
-    """Return exact Gaia-source/DESI-TARGETID mappings in deterministic batches."""
+    """Return Gaia-source/DESI-TARGETID mappings in deterministic batches."""
     identifiers = _validated_source_ids(source_ids)
     columns = list(_EXPECTED_COLUMNS)
     if not identifiers:
         return pd.DataFrame(columns=columns), []
     frames: list[pd.DataFrame] = []
     receipts: list[DataLabBatchReceipt] = []
-    for batch_index, start in enumerate(range(0, len(identifiers), config.batch_size)):
+    for batch_index, start in enumerate(
+        range(0, len(identifiers), config.batch_size)
+    ):
         batch = identifiers[start : start + config.batch_size]
         batch_set = set(batch)
-        sql = build_desi_gaia_overlap_sql(batch, survey=survey, programs=programs)
-        text, attempts = execute_sync_csv_query(sql, config=config, opener=opener)
+        sql = build_desi_gaia_overlap_sql(
+            batch,
+            survey=survey,
+            programs=programs,
+        )
+        text, attempts = execute_sync_csv_query(
+            sql,
+            config=config,
+            opener=opener,
+        )
         frame = parse_desi_gaia_overlap_csv(text)
         unexpected = sorted(set(frame["source_id"].astype(int)) - batch_set)
         if unexpected:
             raise DataLabQueryError(
-                f"Data Lab returned source IDs outside the current batch: {unexpected[:5]}"
+                "Data Lab returned source IDs outside the current batch: "
+                f"{unexpected[:5]}"
             )
         if (frame["match_distance_arcsec"] > 1.5 + 1e-9).any():
-            raise DataLabQueryError("official 1.5-arcsec table returned a larger distance")
+            raise DataLabQueryError(
+                "official 1.5-arcsec table returned a larger distance"
+            )
         response_bytes = len(text.encode("utf-8"))
         receipts.append(
             DataLabBatchReceipt(
@@ -299,17 +328,24 @@ def query_desi_gaia_overlap(
                 returned_row_count=len(frame),
                 returned_source_count=int(frame["source_id"].nunique()),
                 query_sha256=hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-                response_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                response_sha256=hashlib.sha256(
+                    text.encode("utf-8")
+                ).hexdigest(),
                 response_bytes=response_bytes,
                 attempts=attempts,
             )
         )
         frames.append(frame)
-    result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=columns)
+    result = (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame(columns=columns)
+    )
     if not result.empty:
         key = ["source_id", "targetid", "survey", "program", "healpix"]
         result = result.sort_values(
-            key + ["match_distance_arcsec"], kind="stable"
+            key + ["match_distance_arcsec"],
+            kind="stable",
         ).drop_duplicates(key, keep="first")
         result = result.reset_index(drop=True)
     return result, receipts
