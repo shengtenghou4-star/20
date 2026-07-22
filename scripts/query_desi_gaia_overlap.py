@@ -10,7 +10,8 @@ from pathlib import Path
 import pandas as pd
 from astropy.table import Table
 
-from hou_compact.datalab import DataLabQueryConfig, query_desi_gaia_overlap
+from hou_compact.datalab import DataLabQueryConfig
+from hou_compact.datalab_query_manager import query_desi_gaia_overlap_v2
 from hou_compact.gaia import sha256_file
 
 
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--service-url",
         default="https://datalab.noirlab.edu/query",
-        help="NOIRLab Data Lab Query Manager root",
+        help="NOIRLab Data Lab Query Manager service root",
     )
     parser.add_argument(
         "--program",
@@ -63,7 +64,7 @@ def main() -> None:
         retries=args.retries,
         batch_size=args.batch_size,
     )
-    overlap, receipts = query_desi_gaia_overlap(
+    overlap, receipts = query_desi_gaia_overlap_v2(
         source_ids,
         programs=programs,
         config=config,
@@ -101,6 +102,7 @@ def main() -> None:
             float(overlap["match_distance_arcsec"].max()) if not overlap.empty else None
         ),
         "query_service": config.service_url,
+        "query_transport": "official_query_manager_nested_query_endpoint",
         "query_profile": config.profile,
         "crossmatch_table": "gaia_dr3.x1p5__gaia_source__desi_dr1__zpix",
         "desi_table": "desi_dr1.zpix",
