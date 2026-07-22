@@ -25,7 +25,7 @@ concurrency:
 jobs:
   live-public-data-stack:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 165
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,6 +50,7 @@ jobs:
             tests/test_dark668_lamost.py \
             tests/test_dark668_rv.py \
             tests/test_dark668_kepler.py \
+            tests/test_dark668_dynamics.py \
             tests/test_lamost_tap_rv.py
 
       - name: Acquire frozen candidate catalogues and exact Gaia bridge
@@ -192,6 +193,21 @@ jobs:
             --maximum-function-evaluations 4000 \
             --base-seed 20260723
 
+      - name: Run dynamical mass and geometry audit
+        id: dynamics
+        if: steps.kepler_score.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/audit_dark668_dynamics.py \
+            outputs/private/dark668_seed.csv \
+            outputs/private/dark668_keplerian_scores.csv \
+            --output outputs/private/dark668_dynamical_audit.csv \
+            --safe-summary outputs/dark668_dynamical_summary.json \
+            --minimum-kepler-delta-bic 6 \
+            --maximum-reduced-chi2 5 \
+            --minimum-companion-mass-solar 3 \
+            --maximum-roche-fill-proxy 0.8
+
       - name: Build candidate-safe master receipt
         if: always()
         env:
@@ -205,6 +221,7 @@ jobs:
           JOIN_OUTCOME: ${{ steps.join_rv.outcome }}
           PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
           KEPLER_OUTCOME: ${{ steps.kepler_score.outcome }}
+          DYNAMICS_OUTCOME: ${{ steps.dynamics.outcome }}
         run: |
           mkdir -p outputs
           python - <<'PY'
@@ -221,6 +238,7 @@ jobs:
               'dark668_lamost_join_summary.json',
               'dark668_period_prior_summary.json',
               'dark668_keplerian_summary.json',
+              'dark668_dynamical_summary.json',
           ]
           receipts = {}
           for name in names:
@@ -228,7 +246,7 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.2',
+              'schema_version': '0.3',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
@@ -244,12 +262,14 @@ jobs:
                   'join_rv': os.environ.get('JOIN_OUTCOME'),
                   'period_score': os.environ.get('PERIOD_OUTCOME'),
                   'kepler_score': os.environ.get('KEPLER_OUTCOME'),
+                  'dynamics': os.environ.get('DYNAMICS_OUTCOME'),
               },
               'receipts': receipts,
               'claim_boundary': (
-                  'The stack produces a reproducible follow-up queue and model audits only. '
-                  'No source is classified as a binary, neutron star, black hole, or compact '
-                  'object without downstream stellar, contamination, robustness, and novelty gates.'
+                  'The stack produces a reproducible follow-up queue, orbit-model audits, '
+                  'and SB1 physical-consistency checks only. No source is classified as a '
+                  'binary, neutron star, black hole, or compact object without downstream '
+                  'stellar, contamination, robustness, and novelty gates.'
               ),
           }
           Path('outputs/dark668_full_stack_summary.json').write_text(
@@ -321,3 +341,4 @@ jobs:
           test "${{ steps.join_rv.outcome }}" = "success"
           test "${{ steps.period_score.outcome }}" = "success"
           test "${{ steps.kepler_score.outcome }}" = "success"
+          test "${{ steps.dynamics.outcome }}" = "success"
