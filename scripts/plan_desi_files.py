@@ -32,26 +32,33 @@ def main() -> None:
     table = Table.read(args.input)
     if "source_id" not in table.colnames:
         raise KeyError("input table has no source_id column")
+
     pairs = DEFAULT_SURVEY_PROGRAMS
     if args.survey_program:
-        parsed = []
+        parsed: list[tuple[str, str]] = []
         for item in args.survey_program:
             survey, separator, program = item.partition(":")
             if not separator or not survey or not program:
                 raise ValueError(f"invalid SURVEY:PROGRAM value: {item!r}")
             parsed.append((survey, program))
         pairs = tuple(parsed)
-    plan = plan_single_epoch_files(table["source_id"], pairs)
-    frame = write_file_plan(plan, args.output)
+    pairs = tuple(sorted(set(pairs)))
+
+    plan = plan_single_epoch_files(
+        table["source_id"],
+        survey_programs=pairs,
+    )
+    write_file_plan(plan, args.output)
+    unique_healpix = len({item.healpix for item in plan})
     manifest = {
         "input": str(args.input),
         "input_sha256": sha256_file(args.input),
         "output": str(args.output),
         "output_sha256": sha256_file(args.output),
         "source_rows": len(table),
-        "unique_level6_healpix": int(frame["healpix"].nunique()) if not frame.empty else 0,
-        "planned_files": len(frame),
-        "survey_programs": [list(pair) for pair in sorted(set(pairs))],
+        "unique_level6_healpix": unique_healpix,
+        "planned_files": len(plan),
+        "survey_programs": [list(pair) for pair in pairs],
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
