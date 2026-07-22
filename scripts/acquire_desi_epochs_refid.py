@@ -8,16 +8,39 @@ import hashlib
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from astropy.table import Table
 
-from hou_compact.desi import download_file_bounded, gaia_source_id_to_healpix
+from hou_compact.desi import download_file_bounded
 from hou_compact.desi_epoch_columns import restore_single_exposure_columns
 from hou_compact.desi_exact import extract_single_epoch_rows_by_dr2_refid
 from hou_compact.gaia import sha256_file
 
 _FILE_KEY = ["survey", "program", "healpix"]
+_EMPTY_COLUMNS = [
+    "source_id",
+    "targetid",
+    "expid",
+    "mjd",
+    "vrad",
+    "vrad_err",
+    "success",
+    "rvs_warn",
+    "fiberstatus",
+    "sn_b",
+    "sn_r",
+    "sn_z",
+    "survey",
+    "program",
+    "healpix",
+    "source_match_mode",
+    "source_match_separation_arcsec",
+    "desi_ref_id",
+    "desi_ref_cat",
+    "dr2_neighbour_count",
+    "dr2_distance_margin_mas",
+    "official_epoch_columns_restored",
+]
 
 
 def read_table(path: Path) -> pd.DataFrame:
@@ -56,7 +79,9 @@ def parse_args() -> argparse.Namespace:
 def _truthy(series: pd.Series) -> pd.Series:
     if pd.api.types.is_bool_dtype(series):
         return series.fillna(False)
-    return series.astype(str).str.strip().str.lower().isin({"1", "true", "yes", "y"})
+    return series.astype(str).str.strip().str.lower().isin(
+        {"1", "true", "yes", "y"}
+    )
 
 
 def _local_path(cache_dir: Path, url: str) -> Path:
@@ -74,10 +99,15 @@ def _normalize_availability(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     for column in ("survey", "program"):
         result[column] = result[column].astype(str).str.strip().str.lower()
-    result["healpix"] = pd.to_numeric(result["healpix"], errors="raise").astype("int64")
+    result["healpix"] = pd.to_numeric(
+        result["healpix"],
+        errors="raise",
+    ).astype("int64")
     if "status" in result.columns:
         result = result.loc[
-            result["status"].astype(str).str.lower().isin({"exists", "ok", "200"})
+            result["status"].astype(str).str.lower().isin(
+                {"exists", "ok", "200"}
+            )
         ]
     if "exists" in result.columns:
         result = result.loc[_truthy(result["exists"])]
@@ -112,36 +142,35 @@ def main() -> None:
     if missing_bridge:
         raise KeyError(f"bridge is missing columns: {missing_bridge}")
 
-    gaia_ids = pd.to_numeric(gaia["source_id"], errors="raise").astype("int64")
+    gaia_ids = pd.to_numeric(
+        gaia["source_id"],
+        errors="raise",
+    ).astype("int64")
     if gaia_ids.duplicated().any():
         raise ValueError("Gaia input contains duplicate source_id rows")
     bridge = bridge.copy()
-    bridge["source_id"] = pd.to_numeric(bridge["source_id"], errors="raise").astype("int64")
+    bridge["source_id"] = pd.to_numeric(
+        bridge["source_id"],
+        errors="raise",
+    ).astype("int64")
     unknown = sorted(set(bridge["source_id"]) - set(gaia_ids))
     if unknown:
-        raise ValueError(f"bridge contains sources outside Gaia input: {unknown[:5]}")
+        raise ValueError(
+            f"bridge contains sources outside Gaia input: {unknown[:5]}"
+        )
     bridge = bridge.loc[
-        bridge["dr2_bridge_status"].eq("accepted_unique_or_separated_nearest")
+        bridge["dr2_bridge_status"].eq(
+            "accepted_unique_or_separated_nearest"
+        )
     ].copy()
-    bridge["healpix"] = [
-        gaia_source_id_to_healpix(int(value)) for value in bridge["source_id"]
-    ]
 
-    file_counts = (
-        bridge.groupby("healpix", as_index=False)
-        .agg(bridge_source_count=("source_id", "nunique"))
-    )
-    candidate_files = availability.merge(
-        file_counts,
-        on="healpix",
-        how="inner",
-        validate="many_to_one",
-    )
-    candidate_files = candidate_files.loc[
-        candidate_files["program"].isin({"bright", "dark"})
+    # REF_ID equality is authoritative and cheap to test. Scan every verified
+    # bright/dark MWS file rather than pre-filtering by DR3 HEALPix, which could miss
+    # high-proper-motion sources or objects crossing a pixel boundary between epochs.
+    candidate_files = availability.loc[
+        availability["program"].isin({"bright", "dark"})
     ].sort_values(
-        ["bridge_source_count", "survey", "program", "healpix"],
-        ascending=[False, True, True, True],
+        ["survey", "program", "healpix"],
         kind="stable",
     )
     candidate_files = candidate_files.head(args.max_files).reset_index(drop=True)
@@ -156,7 +185,6 @@ def main() -> None:
         remaining = maximum_total_bytes - total_bytes
         if remaining <= 0:
             break
-        selected_bridge = bridge.loc[bridge["healpix"].eq(int(file_row["healpix"]))]
         url = str(file_row["url"])
         local = _local_path(args.cache_dir, url)
         result = download_file_bounded(
@@ -173,13 +201,15 @@ def main() -> None:
                 "survey": str(file_row["survey"]),
                 "program": str(file_row["program"]),
                 "healpix": int(file_row["healpix"]),
-                "bridge_source_count": int(file_row["bridge_source_count"]),
+                "bridge_source_count_scanned": int(
+                    bridge["source_id"].nunique()
+                ),
             }
         )
         downloads.append(result)
         extracted = extract_single_epoch_rows_by_dr2_refid(
             local,
-            selected_bridge,
+            bridge,
             survey=str(file_row["survey"]),
             program=str(file_row["program"]),
             healpix=int(file_row["healpix"]),
@@ -193,12 +223,20 @@ def main() -> None:
 
     if frames:
         epochs = pd.concat(frames, ignore_index=True)
-        duplicate_key = ["source_id", "targetid", "expid", "survey", "program"]
+        duplicate_key = [
+            "source_id",
+            "targetid",
+            "expid",
+            "survey",
+            "program",
+        ]
         epochs = epochs.drop_duplicates(duplicate_key).sort_values(
-            ["source_id", "mjd", "expid"], kind="stable", na_position="last"
+            ["source_id", "mjd", "expid"],
+            kind="stable",
+            na_position="last",
         ).reset_index(drop=True)
     else:
-        epochs = pd.DataFrame()
+        epochs = pd.DataFrame(columns=_EMPTY_COLUMNS)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     epochs.to_csv(args.output, index=False)
@@ -212,7 +250,7 @@ def main() -> None:
         "output": str(args.output),
         "output_sha256": sha256_file(args.output),
         "accepted_bridge_source_count": int(bridge["source_id"].nunique()),
-        "candidate_file_count": len(candidate_files),
+        "verified_nonbackup_file_count": len(candidate_files),
         "files_downloaded": len(downloads),
         "files_with_matched_rows": files_with_rows,
         "downloaded_bytes": total_bytes,
@@ -223,7 +261,9 @@ def main() -> None:
         "match_mode_counts": (
             {
                 str(key): int(value)
-                for key, value in epochs["source_match_mode"].value_counts().items()
+                for key, value in epochs["source_match_mode"]
+                .value_counts()
+                .items()
             }
             if not epochs.empty
             else {}
@@ -235,6 +275,7 @@ def main() -> None:
             "timeout": args.timeout,
             "retries": args.retries,
             "remove_fits_after_extraction": args.remove_fits_after_extraction,
+            "file_selection": "all_verified_bright_dark_mws_files",
         },
         "downloads": downloads,
         "interpretation_boundary": (
@@ -243,7 +284,9 @@ def main() -> None:
             "orbit support or compact-object classifications."
         ),
     }
-    manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
+    manifest_path = args.output.with_suffix(
+        args.output.suffix + ".manifest.json"
+    )
     manifest_path.write_text(
         json.dumps(manifest, indent=2, sort_keys=True),
         encoding="utf-8",
