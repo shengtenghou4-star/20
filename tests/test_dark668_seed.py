@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import ModuleType
 
 import pandas as pd
 import pytest
 
 from hou_compact.dark668 import CATALOGUES
+
+
+def _seed_script() -> ModuleType:
+    path = Path(__file__).parents[1] / "scripts" / "prepare_dark668_seed.py"
+    spec = importlib.util.spec_from_file_location("prepare_dark668_seed", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load prepare_dark668_seed.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 @pytest.fixture
@@ -45,8 +57,7 @@ def frozen_catalogue_dir(tmp_path: Path) -> Path:
 def test_build_seed_preserves_exact_population_counts(
     frozen_catalogue_dir: Path,
 ) -> None:
-    from scripts.prepare_dark668_seed import build_seed
-
+    build_seed = _seed_script().build_seed
     seed, summary = build_seed(frozen_catalogue_dir, "all", None)
     assert len(seed) == 668
     assert seed["source_id"].is_unique
@@ -55,8 +66,7 @@ def test_build_seed_preserves_exact_population_counts(
 
 
 def test_build_seed_supports_rgb_top_n(frozen_catalogue_dir: Path) -> None:
-    from scripts.prepare_dark668_seed import build_seed
-
+    build_seed = _seed_script().build_seed
     seed, summary = build_seed(frozen_catalogue_dir, "RGB", 25)
     assert len(seed) == 25
     assert seed["population"].eq("RGB").all()
@@ -65,7 +75,6 @@ def test_build_seed_supports_rgb_top_n(frozen_catalogue_dir: Path) -> None:
 
 
 def test_build_seed_rejects_nonpositive_top(frozen_catalogue_dir: Path) -> None:
-    from scripts.prepare_dark668_seed import build_seed
-
+    build_seed = _seed_script().build_seed
     with pytest.raises(ValueError, match="positive"):
         build_seed(frozen_catalogue_dir, "all", 0)
