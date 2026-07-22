@@ -3,14 +3,13 @@
 DESI DR1 targeting metadata records Gaia DR2 source identifiers when ``REF_CAT='G2'``.
 Gaia explicitly warns that source identifiers are not stable across releases, so DR3 IDs
 must be connected to DR2 through ``gaiadr3.dr2_neighbourhood`` rather than compared
-numerically.  This module retrieves and audits that bridge without guessing ambiguous
+numerically. This module retrieves and audits that bridge without guessing ambiguous
 release-to-release associations.
 """
 
 from __future__ import annotations
 
 import hashlib
-import io
 import math
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
@@ -26,6 +25,17 @@ _EXPECTED_COLUMNS = (
     "angular_distance_mas",
     "magnitude_difference_mag",
     "proper_motion_propagation",
+)
+_AUDITED_COLUMNS = (
+    "source_id",
+    "dr2_source_id",
+    "dr2_bridge_status",
+    "dr2_neighbour_count",
+    "dr2_angular_distance_mas",
+    "dr2_second_distance_mas",
+    "dr2_distance_margin_mas",
+    "dr2_magnitude_difference_mag",
+    "dr2_proper_motion_propagation",
 )
 
 
@@ -74,7 +84,9 @@ def _source_ids(values: Iterable[int]) -> list[int]:
         except (TypeError, ValueError) as error:
             raise TypeError(f"invalid Gaia DR3 source ID: {raw!r}") from error
         if value < 0 or value > 2**63 - 1:
-            raise ValueError(f"Gaia DR3 source ID outside signed 64-bit range: {value}")
+            raise ValueError(
+                f"Gaia DR3 source ID outside signed 64-bit range: {value}"
+            )
         result.add(value)
     return sorted(result)
 
@@ -95,19 +107,19 @@ def build_gaia_dr2_bridge_adql(source_ids: Iterable[int]) -> str:
             "    d.proper_motion_propagation AS proper_motion_propagation",
             "FROM gaiadr3.dr2_neighbourhood AS d",
             f"WHERE d.dr3_source_id IN ({values})",
-            "ORDER BY d.dr3_source_id, d.angular_distance, ABS(d.magnitude_difference),",
-            "         d.dr2_source_id",
+            "ORDER BY d.dr3_source_id, d.angular_distance,",
+            "         ABS(d.magnitude_difference), d.dr2_source_id",
         ]
     )
 
 
-def _default_query_executor(tap_url: str, adql: str, maxrec: int) -> pd.DataFrame:
+def _default_query_executor(
+    tap_url: str,
+    adql: str,
+    maxrec: int,
+) -> pd.DataFrame:
     service = pyvo.dal.TAPService(tap_url)
-    table = service.run_sync(adql, maxrec=maxrec).to_table()
-    buffer = io.StringIO()
-    table.write(buffer, format="ascii.csv")
-    buffer.seek(0)
-    return pd.read_csv(buffer, dtype=str)
+    return service.run_sync(adql, maxrec=maxrec).to_table().to_pandas()
 
 
 def _validate_batch(frame: pd.DataFrame, requested: set[int]) -> pd.DataFrame:
@@ -115,10 +127,20 @@ def _validate_batch(frame: pd.DataFrame, requested: set[int]) -> pd.DataFrame:
     result.columns = [str(column).strip().lower() for column in result.columns]
     missing = sorted(set(_EXPECTED_COLUMNS) - set(result.columns))
     if missing:
-        raise GaiaDr2BridgeError(f"Gaia bridge response is missing columns: {missing}")
+        raise GaiaDr2BridgeError(
+            f"Gaia bridge response is missing columns: {missing}"
+        )
     result = result.loc[:, list(_EXPECTED_COLUMNS)]
     if result.empty:
-        return result
+        return result.astype(
+            {
+                "dr3_source_id": "int64",
+                "dr2_source_id": "int64",
+                "angular_distance_mas": "float64",
+                "magnitude_difference_mag": "float64",
+                "proper_motion_propagation": "bool",
+            }
+        )
     for name in ("dr3_source_id", "dr2_source_id"):
         numeric = pd.to_numeric(result[name], errors="raise")
         if (numeric % 1 != 0).any():
@@ -127,7 +149,8 @@ def _validate_batch(frame: pd.DataFrame, requested: set[int]) -> pd.DataFrame:
     unexpected = sorted(set(result["dr3_source_id"].astype(int)) - requested)
     if unexpected:
         raise GaiaDr2BridgeError(
-            f"Gaia bridge returned source IDs outside the current batch: {unexpected[:5]}"
+            "Gaia bridge returned source IDs outside the current batch: "
+            f"{unexpected[:5]}"
         )
     result["angular_distance_mas"] = pd.to_numeric(
         result["angular_distance_mas"], errors="raise"
@@ -153,7 +176,9 @@ def query_gaia_dr2_neighbourhood(
     source_ids: Iterable[int],
     *,
     config: GaiaDr2BridgeConfig = GaiaDr2BridgeConfig(),
-    query_executor: Callable[[str, str, int], pd.DataFrame] = _default_query_executor,
+    query_executor: Callable[[str, str, int], pd.DataFrame] = (
+        _default_query_executor
+    ),
 ) -> tuple[pd.DataFrame, list[GaiaDr2BridgeBatchReceipt]]:
     """Retrieve all DR2 neighbours for DR3 sources in deterministic batches."""
     identifiers = _source_ids(source_ids)
@@ -161,7 +186,9 @@ def query_gaia_dr2_neighbourhood(
         return pd.DataFrame(columns=_EXPECTED_COLUMNS), []
     frames: list[pd.DataFrame] = []
     receipts: list[GaiaDr2BridgeBatchReceipt] = []
-    for batch_index, start in enumerate(range(0, len(identifiers), config.batch_size)):
+    for batch_index, start in enumerate(
+        range(0, len(identifiers), config.batch_size)
+    ):
         batch = identifiers[start : start + config.batch_size]
         adql = build_gaia_dr2_bridge_adql(batch)
         try:
@@ -171,11 +198,13 @@ def query_gaia_dr2_neighbourhood(
             if isinstance(error, GaiaDr2BridgeError):
                 raise
             raise GaiaDr2BridgeError(
-                f"Gaia DR2 bridge batch {batch_index} failed: {type(error).__name__}: {error}"
+                f"Gaia DR2 bridge batch {batch_index} failed: "
+                f"{type(error).__name__}: {error}"
             ) from error
         if len(frame) >= config.maxrec_per_batch:
             raise GaiaDr2BridgeError(
-                f"Gaia bridge batch {batch_index} reached maxrec; result may be truncated"
+                f"Gaia bridge batch {batch_index} reached maxrec; "
+                "result may be truncated"
             )
         receipts.append(
             GaiaDr2BridgeBatchReceipt(
@@ -187,7 +216,11 @@ def query_gaia_dr2_neighbourhood(
             )
         )
         frames.append(frame)
-    output = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=_EXPECTED_COLUMNS)
+    output = (
+        pd.concat(frames, ignore_index=True)
+        if frames
+        else pd.DataFrame(columns=_EXPECTED_COLUMNS)
+    )
     if not output.empty:
         output = output.sort_values(
             [
@@ -209,18 +242,30 @@ def audit_gaia_dr2_bridge(
     maximum_nearest_distance_mas: float = 1000.0,
     minimum_distance_margin_mas: float = 5.0,
 ) -> pd.DataFrame:
-    """Select only unambiguous DR2 counterparts while preserving rejected rows.
+    """Select only unambiguous DR2 counterparts while preserving rejected rows."""
+    if (
+        not math.isfinite(maximum_nearest_distance_mas)
+        or maximum_nearest_distance_mas <= 0
+    ):
+        raise ValueError(
+            "maximum_nearest_distance_mas must be finite and positive"
+        )
+    if (
+        not math.isfinite(minimum_distance_margin_mas)
+        or minimum_distance_margin_mas < 0
+    ):
+        raise ValueError(
+            "minimum_distance_margin_mas must be finite and non-negative"
+        )
+    requested = set(
+        pd.to_numeric(neighbours["dr3_source_id"], errors="raise").astype(
+            "int64"
+        )
+    )
+    frame = _validate_batch(neighbours, requested)
+    if frame.empty:
+        return pd.DataFrame(columns=_AUDITED_COLUMNS)
 
-    A bridge is accepted when the nearest neighbour lies within the configured distance
-    and either it is the only neighbour or the second-nearest distance is separated by at
-    least ``minimum_distance_margin_mas``.  The full neighbourhood remains in the raw
-    product; this audited table provides one fail-closed mapping per DR3 source.
-    """
-    if not math.isfinite(maximum_nearest_distance_mas) or maximum_nearest_distance_mas <= 0:
-        raise ValueError("maximum_nearest_distance_mas must be finite and positive")
-    if not math.isfinite(minimum_distance_margin_mas) or minimum_distance_margin_mas < 0:
-        raise ValueError("minimum_distance_margin_mas must be finite and non-negative")
-    frame = _validate_batch(neighbours, set(pd.to_numeric(neighbours["dr3_source_id"], errors="raise").astype("int64")))
     records: list[dict[str, object]] = []
     for dr3_source_id, group in frame.groupby("dr3_source_id", sort=True):
         ordered = group.sort_values(
@@ -251,11 +296,21 @@ def audit_gaia_dr2_bridge(
                 "dr2_source_id": int(nearest["dr2_source_id"]),
                 "dr2_bridge_status": status,
                 "dr2_neighbour_count": neighbour_count,
-                "dr2_angular_distance_mas": float(nearest["angular_distance_mas"]),
+                "dr2_angular_distance_mas": float(
+                    nearest["angular_distance_mas"]
+                ),
                 "dr2_second_distance_mas": second_distance,
                 "dr2_distance_margin_mas": margin,
-                "dr2_magnitude_difference_mag": float(nearest["magnitude_difference_mag"]),
-                "dr2_proper_motion_propagation": bool(nearest["proper_motion_propagation"]),
+                "dr2_magnitude_difference_mag": float(
+                    nearest["magnitude_difference_mag"]
+                ),
+                "dr2_proper_motion_propagation": bool(
+                    nearest["proper_motion_propagation"]
+                ),
             }
         )
-    return pd.DataFrame.from_records(records).sort_values("source_id", kind="stable").reset_index(drop=True)
+    return (
+        pd.DataFrame.from_records(records, columns=_AUDITED_COLUMNS)
+        .sort_values("source_id", kind="stable")
+        .reset_index(drop=True)
+    )
