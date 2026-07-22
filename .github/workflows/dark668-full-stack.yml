@@ -7,10 +7,10 @@ on:
       - "src/hou_compact/lamost*.py"
       - "scripts/*dark668*.py"
       - "scripts/acquire_lamost_tap_rv.py"
-      - "scripts/extract_lamost_dr8_overlap.py"
+      - "scripts/query_dark668_lamost_mec_tap.py"
       - "scripts/query_gaia_dr2_bridge.py"
       - "tests/test_dark668*.py"
-      - "tests/test_lamost_tap_rv.py"
+      - "tests/test_lamost_tap*.py"
       - "keys/hou_compact_relay_public.pem"
       - ".github/workflows/dark668-full-stack.yml"
   workflow_dispatch:
@@ -25,7 +25,7 @@ concurrency:
 jobs:
   live-public-data-stack:
     runs-on: ubuntu-latest
-    timeout-minutes: 165
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,6 +51,8 @@ jobs:
             tests/test_dark668_rv.py \
             tests/test_dark668_kepler.py \
             tests/test_dark668_dynamics.py \
+            tests/test_lamost_tap_get.py \
+            tests/test_lamost_tap_mec.py \
             tests/test_lamost_tap_rv.py
 
       - name: Acquire frozen candidate catalogues and exact Gaia bridge
@@ -76,57 +78,22 @@ jobs:
             --overwrite \
             > outputs/private/dark668_gaia_bridge.stdout.json
 
-      - name: Download official LAMOST DR8 multiple-epoch catalogue
-        id: download_mec
+      - name: Query exact LAMOST multiple-epoch rows through TAP GET
+        id: mec_tap
         if: steps.prepare.outcome == 'success'
         continue-on-error: true
         run: |
-          mkdir -p data/raw/lamost
-          curl --fail --location \
-            --retry 5 --retry-delay 5 --retry-all-errors \
-            --connect-timeout 60 --max-time 2400 \
-            --output data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz \
-            'https://www.lamost.org/dr8/v1.0/catdl?name=dr8_v1.0_LRS_mec.csv.gz'
-          python - <<'PY'
-          import gzip
-          import hashlib
-          import json
-          from pathlib import Path
-
-          path = Path('data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz')
-          assert path.stat().st_size > 1024
-          with path.open('rb') as handle:
-              assert handle.read(2) == b'\x1f\x8b'
-          with gzip.open(path, 'rt', encoding='utf-8-sig') as handle:
-              header = set(handle.readline().strip().split(','))
-          required = {'gaia_source_id', 'obs_number', 'obsid_list', 'midmjm_list', 'rv_list'}
-          assert required.issubset(header)
-          payload = {
-              'candidate_safe': True,
-              'bytes': path.stat().st_size,
-              'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
-              'verified_columns': sorted(required),
-          }
-          Path('outputs/lamost_mec_file_receipt.json').write_text(
-              json.dumps(payload, indent=2, sort_keys=True)
-          )
-          PY
-
-      - name: Extract exact Dark-668 LAMOST overlap
-        id: overlap
-        if: steps.download_mec.outcome == 'success'
-        continue-on-error: true
-        run: |
-          python scripts/extract_lamost_dr8_overlap.py \
-            data/raw/lamost/dr8_v1.0_LRS_mec.csv.gz \
+          python scripts/query_dark668_lamost_mec_tap.py \
             outputs/private/dark668_gaia_dr2_bridge.csv \
             --output outputs/private/dark668_lamost_epochs.csv \
-            --chunk-size 100000 \
-            > outputs/private/dark668_lamost_overlap.stdout.json
+            --safe-summary outputs/dark668_lamost_mec_tap_summary.json \
+            --batch-size 50 \
+            --maxrec-per-batch 100 \
+            --timeout 180
 
       - name: Summarize cadence and raw RV coverage
         id: coverage
-        if: steps.overlap.outcome == 'success'
+        if: steps.mec_tap.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/summarize_dark668_lamost_coverage.py \
@@ -135,9 +102,9 @@ jobs:
             --output outputs/private/dark668_lamost_coverage.csv \
             --safe-summary outputs/dark668_lamost_coverage_summary.json
 
-      - name: Acquire exact per-spectrum RV errors through LAMOST TAP
+      - name: Acquire exact per-spectrum RV errors through LAMOST TAP GET
         id: tap_rv
-        if: steps.overlap.outcome == 'success'
+        if: steps.mec_tap.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/acquire_lamost_tap_rv.py \
@@ -145,7 +112,8 @@ jobs:
             --output outputs/private/dark668_lamost_tap_rv.csv \
             --safe-summary outputs/dark668_lamost_tap_rv_summary.json \
             --batch-size 100 \
-            --maxrec-per-batch 250
+            --maxrec-per-batch 250 \
+            --timeout 180
 
       - name: Join exact RV products and enforce quality gates
         id: join_rv
@@ -214,8 +182,7 @@ jobs:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
-          DOWNLOAD_OUTCOME: ${{ steps.download_mec.outcome }}
-          OVERLAP_OUTCOME: ${{ steps.overlap.outcome }}
+          MEC_TAP_OUTCOME: ${{ steps.mec_tap.outcome }}
           COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
           TAP_RV_OUTCOME: ${{ steps.tap_rv.outcome }}
           JOIN_OUTCOME: ${{ steps.join_rv.outcome }}
@@ -232,7 +199,7 @@ jobs:
           names = [
               'dark668_catalogue_summary.json',
               'dark668_seed_summary.json',
-              'lamost_mec_file_receipt.json',
+              'dark668_lamost_mec_tap_summary.json',
               'dark668_lamost_coverage_summary.json',
               'dark668_lamost_tap_rv_summary.json',
               'dark668_lamost_join_summary.json',
@@ -246,7 +213,7 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.3',
+              'schema_version': '0.4',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
@@ -255,8 +222,7 @@ jobs:
                   'install': os.environ.get('INSTALL_OUTCOME'),
                   'tests': os.environ.get('TESTS_OUTCOME'),
                   'prepare': os.environ.get('PREPARE_OUTCOME'),
-                  'download_mec': os.environ.get('DOWNLOAD_OUTCOME'),
-                  'overlap': os.environ.get('OVERLAP_OUTCOME'),
+                  'mec_tap': os.environ.get('MEC_TAP_OUTCOME'),
                   'coverage': os.environ.get('COVERAGE_OUTCOME'),
                   'tap_rv': os.environ.get('TAP_RV_OUTCOME'),
                   'join_rv': os.environ.get('JOIN_OUTCOME'),
@@ -308,7 +274,7 @@ jobs:
           shred -u \
             /tmp/dark668_full_stack_passphrase.txt \
             /tmp/dark668_full_stack_private.tar.gz
-          rm -rf /tmp/dark668_empty outputs/private data/raw/dark668 data/raw/lamost
+          rm -rf /tmp/dark668_empty outputs/private data/raw/dark668
 
       - name: Upload encrypted source-level evidence
         if: always()
@@ -334,8 +300,7 @@ jobs:
           test "${{ steps.install.outcome }}" = "success"
           test "${{ steps.tests.outcome }}" = "success"
           test "${{ steps.prepare.outcome }}" = "success"
-          test "${{ steps.download_mec.outcome }}" = "success"
-          test "${{ steps.overlap.outcome }}" = "success"
+          test "${{ steps.mec_tap.outcome }}" = "success"
           test "${{ steps.coverage.outcome }}" = "success"
           test "${{ steps.tap_rv.outcome }}" = "success"
           test "${{ steps.join_rv.outcome }}" = "success"
