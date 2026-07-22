@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Gaia-side WP5 contamination evidence for a seed catalogue."""
+"""Generate tiered Gaia-side WP5 contamination evidence for a seed catalogue."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ def read_table(path: Path) -> pd.DataFrame:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("gaia", type=Path, help="Gaia v5 SB1/SB1C seed table")
+    parser.add_argument("gaia", type=Path, help="Gaia SB1/SB1C seed table")
     parser.add_argument(
         "--output",
         type=Path,
@@ -81,8 +81,13 @@ def main() -> None:
         axis=1,
     )
     output = output.sort_values(
-        ["gaia_contamination_signal_count", "source_id"],
-        ascending=[False, True],
+        [
+            "gaia_contamination_high_risk_count",
+            "gaia_contamination_caution_count",
+            "gaia_contamination_context_count",
+            "source_id",
+        ],
+        ascending=[False, False, False, True],
         kind="stable",
     ).reset_index(drop=True)
 
@@ -91,6 +96,11 @@ def main() -> None:
     status_counts = {
         str(key): int(value)
         for key, value in output["gaia_contamination_status"].value_counts().items()
+    }
+    tier_presence_counts = {
+        "high_risk_rows": int(output["gaia_contamination_high_risk_count"].gt(0).sum()),
+        "caution_rows": int(output["gaia_contamination_caution_count"].gt(0).sum()),
+        "context_rows": int(output["gaia_contamination_context_count"].gt(0).sum()),
     }
     manifest = {
         "gaia_input": str(args.gaia),
@@ -101,6 +111,7 @@ def main() -> None:
         "rows_attempted": len(rows),
         "output_rows": len(output),
         "status_counts": status_counts,
+        "tier_presence_counts": tier_presence_counts,
         "thresholds": {
             "ipd_multi_peak_percent_caution": (
                 config.ipd_multi_peak_percent_caution
@@ -125,8 +136,8 @@ def main() -> None:
             ),
         },
         "interpretation_boundary": (
-            "This table records Gaia-side contamination evidence. It neither confirms "
-            "nor excludes a luminous companion or compact object."
+            "High-risk, caution, and context tiers are descriptive evidence classes, not "
+            "calibrated probabilities or automatic compact-object vetoes."
         ),
     }
     manifest_path = args.output.with_suffix(args.output.suffix + ".manifest.json")
