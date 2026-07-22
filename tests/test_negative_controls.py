@@ -70,9 +70,9 @@ def test_phase_scramble_is_deterministic_and_changes_phase() -> None:
 def test_source_offsets_are_constant_within_source() -> None:
     epochs = _epochs()
     shifted = add_deterministic_source_offsets(epochs)
-    differences = shifted["vrad"] - epochs["vrad"]
-    assert differences.nunique() == 1
-    assert differences.iloc[0] != 0.0
+    differences = (shifted["vrad"] - epochs["vrad"]).to_numpy(dtype=float)
+    assert np.ptp(differences) < 1e-12
+    assert differences[0] != 0.0
 
 
 def test_observed_orbit_passes_aggregate_thresholds() -> None:
