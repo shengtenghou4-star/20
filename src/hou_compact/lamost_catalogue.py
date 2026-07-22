@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import html
+import math
 import re
+import time
 from html.parser import HTMLParser
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin
-
-from hou_compact.lamost_openapi import fetch_json
+from urllib.request import Request, urlopen
 
 
 class CatalogueLinkError(RuntimeError):
@@ -92,18 +94,18 @@ def discover_catalogue_links(
     timeout: float = 60.0,
     retries: int = 2,
     maximum_response_bytes: int = 8 * 1024 * 1024,
-    opener: Any = None,
+    opener: Any = urlopen,
 ) -> dict[str, object]:
     """Fetch the first-party catalogue page and expose public link metadata only."""
 
     if not page_url.startswith("https://"):
         raise ValueError("catalogue page URL must use HTTPS")
-
-    # Reuse the bounded JSON transport's request discipline through a local HTML
-    # implementation. Importing fetch_json above intentionally keeps Ruff checking
-    # transport dependencies together; the symbol is used for provenance below.
-    _ = fetch_json
-    from urllib.request import Request, urlopen
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
+    if retries < 0:
+        raise ValueError("retries must be non-negative")
+    if maximum_response_bytes < 1024:
+        raise ValueError("maximum_response_bytes must be at least 1024")
 
     request = Request(
         page_url,
@@ -112,7 +114,6 @@ def discover_catalogue_links(
             "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.1",
         },
     )
-    selected_opener = opener or urlopen
     last_error: BaseException | None = None
     body = b""
     status = 0
@@ -120,7 +121,7 @@ def discover_catalogue_links(
     for attempt in range(retries + 1):
         attempts = attempt + 1
         try:
-            with selected_opener(request, timeout=timeout) as response:
+            with opener(request, timeout=timeout) as response:
                 status = int(getattr(response, "status", 200))
                 body = response.read(maximum_response_bytes + 1)
             if status != 200:
@@ -132,12 +133,20 @@ def discover_catalogue_links(
                     "catalogue page exceeded the byte limit"
                 )
             break
-        except (OSError, TimeoutError) as error:
+        except HTTPError as error:
+            last_error = error
+            retryable = error.code == 429 or error.code >= 500
+            if not retryable or attempt >= retries:
+                raise CatalogueLinkError(
+                    f"catalogue page returned HTTP {error.code}"
+                ) from error
+        except (URLError, OSError, TimeoutError) as error:
             last_error = error
             if attempt >= retries:
                 raise CatalogueLinkError(
                     f"catalogue page transport failed: {error}"
                 ) from error
+        time.sleep(min(2**attempt, 8))
     if not body and last_error is not None:
         raise CatalogueLinkError(str(last_error))
 
