@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 
-import pandas as pd
 import pyvo
 
 
