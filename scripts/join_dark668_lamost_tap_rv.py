@@ -15,6 +15,30 @@ from hou_compact.dark668_lamost import (
 )
 from hou_compact.gaia import sha256_file
 
+_EMPTY_EPOCH_COLUMNS = [
+    "source_id",
+    "dr2_source_id",
+    "lamost_source_id",
+    "obsid",
+    "lmjm",
+    "mjd",
+    "vrad_list_kms",
+    "rv_list_status",
+    "observation_index",
+    "observation_count",
+    "source_match_mode",
+]
+_EMPTY_TAP_COLUMNS = [
+    "obsid",
+    "rv",
+    "rv_err",
+    "snrg",
+    "snri",
+    "class",
+    "subclass",
+    "fibermask",
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -34,13 +58,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _read_or_empty(path: Path, columns: list[str], dtype: dict[str, str]) -> pd.DataFrame:
+    try:
+        frame = pd.read_csv(path, dtype=dtype)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=columns)
+    if frame.empty and not set(columns).issubset(frame.columns):
+        return pd.DataFrame(columns=columns)
+    return frame
+
+
 def main() -> None:
     args = parse_args()
-    epochs = pd.read_csv(
+    epochs = _read_or_empty(
         args.epochs,
-        dtype={"source_id": "string", "dr2_source_id": "string", "obsid": "string"},
+        _EMPTY_EPOCH_COLUMNS,
+        {"source_id": "string", "dr2_source_id": "string", "obsid": "string"},
     )
-    tap_rows = pd.read_csv(args.tap_rows, dtype={"obsid": "string"})
+    tap_rows = _read_or_empty(
+        args.tap_rows,
+        _EMPTY_TAP_COLUMNS,
+        {"obsid": "string"},
+    )
     joined = join_and_standardize_tap_rv(
         epochs,
         tap_rows,
