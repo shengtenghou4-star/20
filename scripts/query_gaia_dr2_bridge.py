@@ -11,8 +11,11 @@ import pandas as pd
 from astropy.table import Table
 
 from hou_compact.gaia import sha256_file
-from hou_compact.gaia_dr2_bridge import GaiaDr2BridgeConfig, audit_gaia_dr2_bridge
-from hou_compact.gaia_dr2_bridge_v2 import query_gaia_dr2_neighbourhood_v2
+from hou_compact.gaia_dr2_bridge import GaiaDr2BridgeConfig
+from hou_compact.gaia_dr2_bridge_v2 import (
+    audit_gaia_dr2_bridge_v2,
+    query_gaia_dr2_neighbourhood_v2,
+)
 
 
 def read_table(path: Path) -> pd.DataFrame:
@@ -62,7 +65,7 @@ def main() -> None:
         source_ids,
         config=config,
     )
-    audited = audit_gaia_dr2_bridge(
+    audited = audit_gaia_dr2_bridge_v2(
         neighbours,
         maximum_nearest_distance_mas=args.maximum_nearest_distance_mas,
         minimum_distance_margin_mas=args.minimum_distance_margin_mas,
@@ -106,6 +109,7 @@ def main() -> None:
             "minimum_distance_margin_mas": args.minimum_distance_margin_mas,
             "server_ordering": "plain_columns_only",
             "client_tie_break": "absolute_magnitude_difference",
+            "audit_tie_break": "absolute_magnitude_difference",
         },
         "batch_receipts": [receipt.to_record() for receipt in receipts],
         "interpretation_boundary": (
