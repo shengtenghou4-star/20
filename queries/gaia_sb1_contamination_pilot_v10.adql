@@ -5,7 +5,9 @@
 -- joins the official Gaia DR3 binary_masses table so the downstream private relay
 -- can compare an independently published SB1 companion-mass lower bound with the
 -- mass function reconstructed from period, K1, eccentricity and the FLAME primary
--- mass. The mass fields remain triage-only and must not be treated as compact-object
+-- mass. The join is restricted to the official SB1+M1 combination method so a
+-- source cannot be duplicated by unrelated binary-mass solution combinations.
+-- The mass fields remain triage-only and must not be treated as compact-object
 -- confirmation without external RV validation and luminous-companion exclusion.
 
 SELECT TOP 5000
@@ -115,6 +117,7 @@ LEFT OUTER JOIN gaiadr3.astrophysical_parameters AS ap
     ON n.source_id = ap.source_id
 LEFT OUTER JOIN gaiadr3.binary_masses AS bm
     ON n.source_id = bm.source_id
+   AND bm.combination_method = 'SB1+M1'
 WHERE n.nss_solution_type IN ('SB1', 'SB1C')
   AND n.period IS NOT NULL
   AND n.period > 0
