@@ -1,10 +1,12 @@
-name: dark668-lamost-search-form-contract
+name: dark668-lamost-anonymous-form-rv
 
 on:
   pull_request:
     paths:
-      - "scripts/probe_lamost_search_form_contract.py"
-      - "tests/test_lamost_search_form_contract.py"
+      - "src/hou_compact/lamost_search_form.py"
+      - "scripts/probe_lamost_anonymous_search_submit.py"
+      - "tests/test_lamost_search_form.py"
+      - "tests/test_lamost_anonymous_search_submit.py"
       - ".github/workflows/dark668-lamost-tap-schema.yml"
   workflow_dispatch:
 
@@ -12,11 +14,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-search-form-contract-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-anonymous-form-rv-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  probe-search-form-contract:
+  validate-anonymous-form-rv:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -27,18 +29,21 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install -e '.[dev]'
-      - name: Validate form-contract extraction
-        run: pytest -q tests/test_lamost_search_form_contract.py
-      - name: Extract form defaults and JavaScript submission snippets
+      - name: Validate multipart and result parsing
+        run: |
+          pytest -q \
+            tests/test_lamost_search_form.py \
+            tests/test_lamost_anonymous_search_submit.py
+      - name: Probe anonymous browser-form RV output
         run: |
           mkdir -p outputs
-          python scripts/probe_lamost_search_form_contract.py \
-            --output outputs/lamost_search_form_contract.json
-      - name: Upload candidate-safe form contract
+          python scripts/probe_lamost_anonymous_search_submit.py \
+            --output outputs/lamost_anonymous_form_rv_contract.json
+      - name: Upload candidate-safe browser-form receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark668-lamost-search-form-contract-${{ github.run_id }}
+          name: dark668-lamost-anonymous-form-rv-${{ github.run_id }}
           path: outputs/*
           if-no-files-found: warn
           retention-days: 30
