@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import csv
-import gzip
-import io
 import json
 import sys
 import tempfile
@@ -71,7 +69,7 @@ class FinalCapsuleTests(unittest.TestCase):
             places=10,
         )
 
-    def test_hybrid_bridge_accepts_utc_corrected_mec_with_30_second_residual(self) -> None:
+    def test_fits_date_obs_is_authoritative_when_mec_disagrees(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             expected = directory / "expected.csv"
@@ -120,7 +118,7 @@ class FinalCapsuleTests(unittest.TestCase):
                     {
                         "obsid": "1001",
                         "hou_compact_dr3_source_id": "1234567890123456789",
-                        "mid_mjd": fits_mjd_1 + 30.0 / 86400.0,
+                        "mid_mjd": fits_mjd_1 + 750.0 / 86400.0,
                         "time_quantisation_half_width_days": 30.0 / 86400.0,
                     }
                 )
@@ -128,23 +126,36 @@ class FinalCapsuleTests(unittest.TestCase):
                     {
                         "obsid": "1002",
                         "hou_compact_dr3_source_id": "1234567890123456789",
-                        "mid_mjd": fits_mjd_2,
+                        "mid_mjd": fits_mjd_2 + 30.0 / 86400.0,
                         "time_quantisation_half_width_days": 30.0 / 86400.0,
                     }
                 )
+            output = directory / "hybrid.csv"
             safe = build_hybrid(
                 expected_path=expected,
                 mec_path=mec,
                 fits_manifest=manifest,
-                output_path=directory / "hybrid.csv",
+                output_path=output,
                 private_receipt_path=directory / "private.json",
                 safe_summary_path=directory / "safe.json",
             )
-            self.assertEqual(safe["mec_fits_crosscheck_mismatches"], 0)
+            self.assertEqual(
+                safe["mec_fits_mismatches_against_public_31_second_contract"],
+                1,
+            )
             self.assertEqual(safe["final_obsids"], 2)
-            self.assertLessEqual(safe["maximum_crosscheck_residual_seconds"], 30.0001)
+            self.assertAlmostEqual(safe["maximum_crosscheck_residual_seconds"], 750.0, places=3)
+            with output.open("r", encoding="utf-8", newline="") as handle:
+                stored_rows = list(csv.DictReader(handle))
+            self.assertEqual(
+                {row["time_source"] for row in stored_rows},
+                {"fits_date_obs_authoritative"},
+            )
+            self.assertAlmostEqual(float(stored_rows[0]["mid_mjd"]), fits_mjd_1, places=10)
+            self.assertAlmostEqual(float(stored_rows[1]["mid_mjd"]), fits_mjd_2, places=10)
             stored = json.loads((directory / "safe.json").read_text())
             self.assertEqual(stored["final_sources"], 1)
+            self.assertEqual(stored["authoritative_fits_obsids"], 2)
 
 
 if __name__ == "__main__":
