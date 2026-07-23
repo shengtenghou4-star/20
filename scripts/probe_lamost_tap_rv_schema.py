@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Validate the LAMOST SQL schema required by the Dark-668 live route.
+"""Validate the direct Gaia DR3 LAMOST DR8 v2.0 RV contract.
 
-Only public ``information_schema.columns`` metadata is queried through the
-release-scoped OpenAPI SQL endpoint. The probe validates both the per-spectrum
-``obsid + rv + rv_err`` contract and an identity-safe multiple-epoch table whose
-Gaia identifier is stored as integer or text. It never requests catalogue rows.
+The probe requests one arbitrary public AFGK spectrum from the documented
+``stellar`` table.  It verifies the exact-character Gaia DR3 identifier and the
+per-spectrum time/RV/error/quality fields.  No returned row values are persisted.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
+from hou_compact.lamost_dr3_spectra import DR3SpectrumSpec
 from hou_compact.lamost_openapi import discover_openapi_contract
 from hou_compact.lamost_openapi_sql import OpenAPISQLService
-from hou_compact.lamost_tap_mec import discover_mec_table_specs
-from hou_compact.lamost_tap_rv import discover_rv_table_specs
 
 _CLAIM_BOUNDARY = (
-    "Public information-schema metadata only. No catalogue rows, source identifiers, "
-    "coordinates, spectra, radial velocities, or candidate classifications were requested."
+    "One arbitrary public contract row is inspected in memory only. No row values, "
+    "source identifiers, coordinates, spectra, or radial velocities are persisted."
 )
 
 
@@ -28,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--openapi-root", default="https://www.lamost.org/openapi")
     parser.add_argument("--dr-version", default="dr8")
-    parser.add_argument("--sub-version", default="v1.0")
+    parser.add_argument("--sub-version", default="v2.0")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--output",
@@ -47,14 +46,16 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 
 def main() -> None:
     args = parse_args()
+    spec = DR3SpectrumSpec()
     payload: dict[str, object] = {
-        "schema_version": "0.6",
+        "schema_version": "0.7",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
         "transport": "bounded_openapi_sql_get",
-        "diagnostic_scope": "metadata_only_sanitized_error_details",
+        "diagnostic_scope": "single_arbitrary_public_contract_row_values_discarded",
+        "frozen_table_contract": spec.to_record(),
         "claim_boundary": _CLAIM_BOUNDARY,
     }
     service: OpenAPISQLService | None = None
@@ -77,47 +78,53 @@ def main() -> None:
             diagnostic_error_details=True,
         )
         payload["sql_endpoint"] = service.endpoint
-        contract_errors: dict[str, dict[str, str]] = {}
+        columns = ", ".join(spec.selected_columns)
+        query = (
+            f"SELECT TOP 1 {columns} FROM {spec.table_name} "
+            f"WHERE {spec.gaia_source_id_column} IS NOT NULL"
+        )
+        frame = service.run_sync(query, maxrec=1)
+        lowered = {str(column).lower(): str(column) for column in frame.columns}
+        missing = sorted(
+            column for column in spec.selected_columns if column.lower() not in lowered
+        )
+        if missing:
+            raise RuntimeError(f"stellar contract missing columns: {missing}")
+        if len(frame) != 1:
+            raise RuntimeError(
+                f"stellar contract probe expected one row and received {len(frame)}"
+            )
+        raw_identity = frame.iloc[0][lowered[spec.gaia_source_id_column.lower()]]
+        identity_text = str(raw_identity).strip()
+        if not isinstance(raw_identity, str):
+            raise RuntimeError(
+                "gaia_source_id was not serialized as character data by OpenAPI"
+            )
+        if re.fullmatch(r"[0-9]+", identity_text) is None:
+            raise RuntimeError("gaia_source_id character value was not exact integer text")
 
-        try:
-            rv_specs = discover_rv_table_specs(service)
-            payload["rv_scoring_table_count"] = len(rv_specs)
-            payload["rv_table_specs"] = [spec.to_record() for spec in rv_specs]
-        except Exception as error:
-            contract_errors["per_spectrum_rv"] = {
-                "error_type": type(error).__name__,
-                "error": str(error)[:2_000],
+        payload.update(
+            {
+                "status": "pass",
+                "probe_row_count": 1,
+                "returned_columns": sorted(lowered),
+                "gaia_source_id_serialization": "character_digits",
+                "source_row_values_persisted": False,
+                "sql_receipts": [
+                    receipt.to_record() for receipt in service.receipts
+                ],
             }
-
-        try:
-            mec_specs = discover_mec_table_specs(service)
-            payload["identity_safe_mec_table_count"] = len(mec_specs)
-            payload["mec_table_specs"] = [spec.to_record() for spec in mec_specs]
-        except Exception as error:
-            contract_errors["multiple_epoch_identity"] = {
-                "error_type": type(error).__name__,
-                "error": str(error)[:2_000],
-            }
-
-        payload["sql_receipts"] = [receipt.to_record() for receipt in service.receipts]
-        payload["contract_errors"] = contract_errors
-        if contract_errors:
-            payload["status"] = "contract_failure"
-            _write(args.output, payload)
-            failed = ", ".join(sorted(contract_errors))
-            raise RuntimeError(f"LAMOST OpenAPI SQL schema contract failed: {failed}")
-        payload["status"] = "pass"
+        )
         _write(args.output, payload)
     except Exception as error:
         if service is not None:
             payload["sql_receipts"] = [
                 receipt.to_record() for receipt in service.receipts
             ]
-        if payload.get("status") != "contract_failure":
-            payload["status"] = "failure"
-            payload["error_type"] = type(error).__name__
-            payload["error"] = str(error)[:2_000]
-            _write(args.output, payload)
+        payload["status"] = "failure"
+        payload["error_type"] = type(error).__name__
+        payload["error"] = str(error)[:2_000]
+        _write(args.output, payload)
         raise
 
 
