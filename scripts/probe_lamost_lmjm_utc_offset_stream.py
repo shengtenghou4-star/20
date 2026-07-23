@@ -9,7 +9,6 @@ import gzip
 import http.cookiejar
 import io
 import json
-import math
 import re
 import statistics
 from decimal import Decimal, InvalidOperation
