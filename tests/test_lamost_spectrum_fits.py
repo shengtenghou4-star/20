@@ -66,6 +66,7 @@ def test_download_validates_fits_and_redacts_obsid_from_receipt() -> None:
     record = receipt.to_record()
     assert record["endpoint"].endswith("/dr8/v2.0/lrs/spectrum/fits")
     assert "403143" not in str(record)
+    assert record["response_kind"] == "fits"
     assert record["hdu_count"] == 2
     assert "RV" in record["header_keys"]
     assert "RV_ERR" in record["header_keys"]
@@ -85,12 +86,16 @@ def test_extract_lasp_rv_rejects_missing_uncertainty() -> None:
         extract_lasp_rv_from_fits(buffer.getvalue())
 
 
-def test_download_rejects_json_error_envelope() -> None:
+def test_download_rejects_json_error_envelope_with_safe_receipt() -> None:
     def opener(request: object, *, timeout: float) -> _Response:
         del request, timeout
-        return _Response(b'{"error":"token required"}', "application/json")
+        return _Response(
+            b'{"error":"token required","description":'
+            b'"obsid 403143 needs https://example.test/private"}',
+            "application/json",
+        )
 
-    with pytest.raises(LamostSpectrumFITSError, match="FITS primary"):
+    with pytest.raises(LamostSpectrumFITSError, match="token required") as captured:
         download_lamost_spectrum_fits(
             "https://example.test/openapi",
             dr_version="dr8",
@@ -99,3 +104,13 @@ def test_download_rejects_json_error_envelope() -> None:
             retries=0,
             opener=opener,
         )
+    receipt = captured.value.receipt
+    assert receipt is not None
+    record = receipt.to_record()
+    assert record["response_kind"] == "json_object"
+    assert record["diagnostic_error_code"] == "token required"
+    assert record["diagnostic_error_description"] == (
+        "obsid [number-redacted] needs [url-redacted]"
+    )
+    assert "403143" not in str(record)
+    assert "example.test/private" not in str(record)
