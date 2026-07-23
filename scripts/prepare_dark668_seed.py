@@ -25,6 +25,8 @@ SAFE_SEED_COLUMNS = (
     "parallax",
     "parallax_error",
     "phot_g_mean_mag",
+    "mass",
+    "radius",
     "population",
     "priority_rank",
     "followup_score",
@@ -90,7 +92,7 @@ def build_seed(input_dir: Path, population: str, top: int | None) -> tuple[pd.Da
         raise ValueError("prepared seed contains duplicate source_id rows")
 
     summary = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "population_request": population,
         "top_request": top,
@@ -98,6 +100,10 @@ def build_seed(input_dir: Path, population: str, top: int | None) -> tuple[pd.Da
         "seed": candidate_safe_summary(ranked),
         "source_level_output_written": True,
         "public_commit_policy": "Never commit or upload the source-level seed.",
+        "private_schema_note": (
+            "The encrypted seed carries primary-star mass and radius for downstream "
+            "mass-function and Roche-geometry audits; neither value is exposed publicly."
+        ),
         "claim_boundary": (
             "The seed is a deterministic follow-up queue. It does not classify any source "
             "or establish novelty, binarity, or a compact companion."
@@ -111,6 +117,7 @@ def main() -> None:
     seed, summary = build_seed(args.input_dir, args.population, args.top)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     seed.to_csv(args.output, index=False)
+    summary["source_level_output_path"] = str(args.output)
     args.safe_summary.parent.mkdir(parents=True, exist_ok=True)
     args.safe_summary.write_text(
         json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"

@@ -1,0 +1,42 @@
+name: dark668-desi-single-epoch-contract
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-desi-single-epoch-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-desi-single-epoch-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Validate bounded DESI RVTAB header logic
+        run: |
+          pytest -q \
+            tests/test_desi_rvtab.py \
+            tests/test_desi_fits_prefix.py
+      - name: Probe official DESI DR1 single-epoch header range
+        run: |
+          mkdir -p outputs
+          python scripts/probe_desi_dr1_single_epoch.py \
+            --output outputs/desi_dr1_single_epoch_contract.json
+      - name: Upload candidate-safe contract receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-desi-single-epoch-contract-${{ github.run_id }}
+          path: outputs/desi_dr1_single_epoch_contract.json
+          if-no-files-found: warn
+          retention-days: 30

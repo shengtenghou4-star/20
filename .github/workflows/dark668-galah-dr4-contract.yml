@@ -1,0 +1,42 @@
+name: dark668-galah-dr4-contract
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-galah-dr4-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-galah-dr4-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Validate bounded TAP and GALAH schema logic
+        run: |
+          pytest -q \
+            tests/test_datacentral_tap.py \
+            tests/test_galah_dr4.py
+      - name: Probe live GALAH DR4 per-spectrum contract
+        run: |
+          mkdir -p outputs
+          python scripts/probe_galah_dr4_tap.py \
+            --output outputs/galah_dr4_tap_contract.json
+      - name: Upload candidate-safe contract receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-galah-dr4-contract-${{ github.run_id }}
+          path: outputs/galah_dr4_tap_contract.json
+          if-no-files-found: warn
+          retention-days: 30

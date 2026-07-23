@@ -1,22 +1,17 @@
-name: dark668-lamost-tap-schema
+name: dark668-lamost-anonymous-form-rv
 
 on:
-  pull_request:
-    paths:
-      - "scripts/probe_lamost_tap_rv_schema.py"
-      - "src/hou_compact/lamost_openapi.py"
-      - ".github/workflows/dark668-lamost-tap-schema.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-tap-schema-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-anonymous-form-rv-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  discover-rv-tables:
+  validate-anonymous-form-rv:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,16 +21,23 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install
-        run: python -m pip install -e .
-      - name: Discover first-party TAP RV schema
+        run: python -m pip install -e '.[dev]'
+      - name: Validate multipart and delimited result parsing
         run: |
-          python scripts/probe_lamost_tap_rv_schema.py \
-            --output outputs/lamost_tap_rv_schema.json
-      - name: Upload candidate-safe schema receipt
+          pytest -q \
+            tests/test_lamost_search_form.py \
+            tests/test_lamost_form_response.py
+      - name: Probe exact-identity finite RV/error pairs
+        run: |
+          mkdir -p outputs
+          python scripts/probe_lamost_anonymous_form_rv_v2.py \
+            --sample-size 25 \
+            --output outputs/lamost_anonymous_form_rv_v2_contract.json
+      - name: Upload candidate-safe browser-form receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark668-lamost-tap-schema-${{ github.run_id }}
-          path: outputs/lamost_tap_rv_schema.json
+          name: dark668-lamost-anonymous-form-rv-${{ github.run_id }}
+          path: outputs/*
           if-no-files-found: warn
           retention-days: 30

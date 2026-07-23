@@ -1,17 +1,20 @@
-name: dark668-full-stack
+name: dark668-apogee-dr17-stack
 
 on:
+  pull_request:
+    paths:
+      - "triggers/dark668-apogee-dr17-stack-*"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-full-stack-${{ github.ref }}
-  cancel-in-progress: true
+  group: dark668-apogee-dr17-stack-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  live-public-data-stack:
+  apogee-dr17-stack:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -38,76 +41,97 @@ jobs:
             tests/test_dark668_rv.py \
             tests/test_dark668_kepler.py \
             tests/test_dark668_dynamics.py \
-            tests/test_lamost_dr3_spectra.py \
-            tests/test_lamost_openapi_sql.py
+            tests/test_dark668_zero_paths.py \
+            tests/test_skyserver_sql.py \
+            tests/test_apogee_dr17.py
 
-      - name: Acquire frozen candidate catalogues and build 668-source seed
-        id: prepare
-        if: steps.install.outcome == 'success' && steps.tests.outcome == 'success'
+      - name: Acquire frozen public catalogues with bounded retries
+        id: acquire
+        if: steps.tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p outputs/private data/raw/dark668 outputs
+          : > outputs/dark668_catalogue_acquisition.log
+          for attempt in 1 2 3; do
+            printf 'catalogue acquisition attempt %s\n' "$attempt" \
+              | tee -a outputs/dark668_catalogue_acquisition.log
+            rm -f data/raw/dark668/*.part
+            if python scripts/acquire_dark668_catalogues.py \
+              --output-dir data/raw/dark668 \
+              --summary-output outputs/dark668_catalogue_summary.json \
+              --timeout 180 \
+              2>&1 | tee -a outputs/dark668_catalogue_acquisition.log; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          exit 1
+
+      - name: Build deterministic 668-source seed
+        id: seed
+        if: steps.acquire.outcome == 'success'
         continue-on-error: true
         run: |
-          mkdir -p outputs/private data/raw/dark668
-          python scripts/acquire_dark668_catalogues.py \
-            --output-dir data/raw/dark668 \
-            --summary-output outputs/dark668_catalogue_summary.json
           python scripts/prepare_dark668_seed.py \
             --input-dir data/raw/dark668 \
             --population all \
             --output outputs/private/dark668_seed.csv \
             --safe-summary outputs/dark668_seed_summary.json
 
-      - name: Query exact Gaia DR3 LAMOST DR8 v2.0 spectra
-        id: dr3_spectra
-        if: steps.prepare.outcome == 'success'
+      - name: Query APOGEE DR17 visits by exact Gaia identity
+        id: apogee_rv
+        if: steps.seed.outcome == 'success'
         continue-on-error: true
         run: |
-          python scripts/query_dark668_lamost_dr3_spectra.py \
+          python scripts/query_dark668_apogee_dr17.py \
             outputs/private/dark668_seed.csv \
-            --output outputs/private/dark668_lamost_dr3_epochs.csv \
-            --safe-summary outputs/dark668_lamost_dr3_summary.json \
-            --dr-version dr8 \
-            --sub-version v2.0 \
-            --batch-size 25 \
-            --maxrec-per-batch 5000 \
-            --timeout 180
+            --output outputs/private/dark668_apogee_dr17_epochs.csv \
+            --safe-summary outputs/dark668_apogee_dr17_summary.json \
+            --batch-size 30 \
+            --max-rows-per-batch 10000 \
+            --timeout 240
 
-      - name: Summarize cadence and raw RV coverage
+      - name: Summarize independent APOGEE cadence and raw RV coverage
         id: coverage
-        if: steps.dr3_spectra.outcome == 'success'
+        if: steps.apogee_rv.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/summarize_dark668_lamost_coverage.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_dr3_epochs.csv \
-            --output outputs/private/dark668_lamost_coverage.csv \
-            --safe-summary outputs/dark668_lamost_coverage_summary.json
+            outputs/private/dark668_apogee_dr17_epochs.csv \
+            --output outputs/private/dark668_apogee_dr17_coverage.csv \
+            --safe-summary outputs/dark668_apogee_dr17_coverage_summary.json
 
-      - name: Run period-prior RV coherence triage
+      - name: Run APOGEE-only period-prior RV coherence triage
         id: period_score
-        if: steps.dr3_spectra.outcome == 'success'
+        if: steps.apogee_rv.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/score_dark668_period_prior.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_dr3_epochs.csv \
-            --output outputs/private/dark668_period_prior_scores.csv \
-            --safe-summary outputs/dark668_period_prior_summary.json \
+            outputs/private/dark668_apogee_dr17_epochs.csv \
+            --output outputs/private/dark668_apogee_dr17_period_scores.csv \
+            --safe-summary outputs/dark668_apogee_dr17_period_summary.json \
             --minimum-visits 5 \
             --period-grid-size 192 \
             --permutations 99 \
             --base-seed 20260723
 
-      - name: Run full Keplerian audit on preselected targets
+      - name: Run APOGEE-only full Keplerian audit
         id: kepler_score
         if: steps.period_score.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/score_dark668_keplerian.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_dr3_epochs.csv \
-            --circular-scores outputs/private/dark668_period_prior_scores.csv \
-            --output outputs/private/dark668_keplerian_scores.csv \
-            --safe-summary outputs/dark668_keplerian_summary.json \
+            outputs/private/dark668_apogee_dr17_epochs.csv \
+            --circular-scores outputs/private/dark668_apogee_dr17_period_scores.csv \
+            --output outputs/private/dark668_apogee_dr17_keplerian_scores.csv \
+            --safe-summary outputs/dark668_apogee_dr17_keplerian_summary.json \
             --minimum-visits 7 \
             --minimum-circular-delta-bic 6 \
             --period-grid-size 192 \
@@ -116,28 +140,29 @@ jobs:
             --maximum-function-evaluations 4000 \
             --base-seed 20260723
 
-      - name: Run dynamical mass and geometry audit
+      - name: Run APOGEE-only dynamical mass and geometry audit
         id: dynamics
         if: steps.kepler_score.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/audit_dark668_dynamics.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_keplerian_scores.csv \
-            --output outputs/private/dark668_dynamical_audit.csv \
-            --safe-summary outputs/dark668_dynamical_summary.json \
+            outputs/private/dark668_apogee_dr17_keplerian_scores.csv \
+            --output outputs/private/dark668_apogee_dr17_dynamical_audit.csv \
+            --safe-summary outputs/dark668_apogee_dr17_dynamical_summary.json \
             --minimum-kepler-delta-bic 6 \
             --maximum-reduced-chi2 5 \
             --minimum-companion-mass-solar 3 \
             --maximum-roche-fill-proxy 0.8
 
-      - name: Build candidate-safe master receipt
+      - name: Build candidate-safe APOGEE master receipt
         if: always()
         env:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
-          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
-          DR3_SPECTRA_OUTCOME: ${{ steps.dr3_spectra.outcome }}
+          ACQUIRE_OUTCOME: ${{ steps.acquire.outcome }}
+          SEED_OUTCOME: ${{ steps.seed.outcome }}
+          APOGEE_RV_OUTCOME: ${{ steps.apogee_rv.outcome }}
           COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
           PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
           KEPLER_OUTCOME: ${{ steps.kepler_score.outcome }}
@@ -152,11 +177,11 @@ jobs:
           names = [
               'dark668_catalogue_summary.json',
               'dark668_seed_summary.json',
-              'dark668_lamost_dr3_summary.json',
-              'dark668_lamost_coverage_summary.json',
-              'dark668_period_prior_summary.json',
-              'dark668_keplerian_summary.json',
-              'dark668_dynamical_summary.json',
+              'dark668_apogee_dr17_summary.json',
+              'dark668_apogee_dr17_coverage_summary.json',
+              'dark668_apogee_dr17_period_summary.json',
+              'dark668_apogee_dr17_keplerian_summary.json',
+              'dark668_apogee_dr17_dynamical_summary.json',
           ]
           receipts = {}
           for name in names:
@@ -164,38 +189,41 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.6',
+              'schema_version': '0.1',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
               'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
               'identity_route': (
-                  'Direct exact Gaia DR3 character equality in LAMOST DR8 v2.0 stellar; '
-                  'no DR2 bridge, float identity, MEC expansion, or approximate match.'
+                  'Exact Gaia EDR3/DR3 integer constraints on apogeeStar, explicit '
+                  'apstar_id mapping through apogeeStarAllVisit, and visit-level rows '
+                  'from apogeeVisit.'
+              ),
+              'survey_combination_policy': (
+                  'APOGEE is analysed independently. Its RV values are not merged with '
+                  'LAMOST or GALAH until survey-specific zero-point and nuisance-offset '
+                  'controls are implemented.'
               ),
               'steps': {
                   'install': os.environ.get('INSTALL_OUTCOME'),
                   'tests': os.environ.get('TESTS_OUTCOME'),
-                  'prepare': os.environ.get('PREPARE_OUTCOME'),
-                  'direct_dr3_spectra': os.environ.get('DR3_SPECTRA_OUTCOME'),
+                  'catalogue_acquisition': os.environ.get('ACQUIRE_OUTCOME'),
+                  'seed': os.environ.get('SEED_OUTCOME'),
+                  'exact_apogee_visits': os.environ.get('APOGEE_RV_OUTCOME'),
                   'coverage': os.environ.get('COVERAGE_OUTCOME'),
                   'period_score': os.environ.get('PERIOD_OUTCOME'),
                   'kepler_score': os.environ.get('KEPLER_OUTCOME'),
                   'dynamics': os.environ.get('DYNAMICS_OUTCOME'),
               },
-              'execution_policy': (
-                  'Manual dispatch only until the lightweight direct-DR3 contract passes, '
-                  'to avoid repeating expensive catalogue work.'
-              ),
               'receipts': receipts,
               'claim_boundary': (
-                  'The stack produces an exact follow-up dataset, orbit-model audits, and '
-                  'SB1 physical-consistency checks only. No source is classified as a binary, '
-                  'neutron star, black hole, or compact object without downstream stellar, '
-                  'contamination, robustness, and novelty gates.'
+                  'The stack produces exact public follow-up data and single-survey model '
+                  'audits only. No source is classified as a binary, neutron star, black '
+                  'hole, compact object, or novel discovery without downstream rejection '
+                  'audits and independent confirmation.'
               ),
           }
-          Path('outputs/dark668_full_stack_summary.json').write_text(
+          Path('outputs/dark668_apogee_dr17_stack_summary.json').write_text(
               json.dumps(payload, indent=2, sort_keys=True)
           )
           print(json.dumps(payload, indent=2, sort_keys=True))
@@ -207,47 +235,49 @@ jobs:
           set -euo pipefail
           mkdir -p encrypted_output
           if [[ -d outputs/private ]]; then
-            tar -C outputs/private -czf /tmp/dark668_full_stack_private.tar.gz .
+            tar -C outputs/private -czf /tmp/dark668_apogee_private.tar.gz .
           else
             mkdir -p /tmp/dark668_empty
             printf '%s\n' 'No source-level output directory was produced.' \
               > /tmp/dark668_empty/NO_SOURCE_OUTPUT.txt
-            tar -C /tmp/dark668_empty -czf /tmp/dark668_full_stack_private.tar.gz .
+            tar -C /tmp/dark668_empty -czf /tmp/dark668_apogee_private.tar.gz .
           fi
-          openssl rand -hex 32 > /tmp/dark668_full_stack_passphrase.txt
+          openssl rand -hex 32 > /tmp/dark668_apogee_passphrase.txt
           openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
-            -pass file:/tmp/dark668_full_stack_passphrase.txt \
-            -in /tmp/dark668_full_stack_private.tar.gz \
-            -out encrypted_output/dark668_full_stack_private.tar.gz.enc
+            -pass file:/tmp/dark668_apogee_passphrase.txt \
+            -in /tmp/dark668_apogee_private.tar.gz \
+            -out encrypted_output/dark668_apogee_private.tar.gz.enc
           openssl pkeyutl -encrypt \
             -pubin \
             -inkey keys/hou_compact_relay_public.pem \
-            -in /tmp/dark668_full_stack_passphrase.txt \
-            -out encrypted_output/dark668_full_stack_private.key.enc \
+            -in /tmp/dark668_apogee_passphrase.txt \
+            -out encrypted_output/dark668_apogee_private.key.enc \
             -pkeyopt rsa_padding_mode:oaep \
             -pkeyopt rsa_oaep_md:sha256
-          cp outputs/dark668_full_stack_summary.json encrypted_output/
+          cp outputs/dark668_apogee_dr17_stack_summary.json encrypted_output/
           sha256sum encrypted_output/* > encrypted_output/SHA256SUMS
           shred -u \
-            /tmp/dark668_full_stack_passphrase.txt \
-            /tmp/dark668_full_stack_private.tar.gz
+            /tmp/dark668_apogee_passphrase.txt \
+            /tmp/dark668_apogee_private.tar.gz
           rm -rf /tmp/dark668_empty outputs/private data/raw/dark668
 
       - name: Upload encrypted source-level evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark668-full-stack-encrypted-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          name: dark668-apogee-dr17-stack-encrypted-${{ github.run_id }}
           path: encrypted_output/
           if-no-files-found: error
           retention-days: 90
 
-      - name: Upload candidate-safe receipts
+      - name: Upload candidate-safe receipts and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark668-full-stack-safe-${{ github.run_id }}-attempt-${{ github.run_attempt }}
-          path: outputs/*.json
+          name: dark668-apogee-dr17-stack-safe-${{ github.run_id }}
+          path: |
+            outputs/*.json
+            outputs/*.log
           if-no-files-found: warn
           retention-days: 30
 
@@ -256,8 +286,9 @@ jobs:
         run: |
           test "${{ steps.install.outcome }}" = "success"
           test "${{ steps.tests.outcome }}" = "success"
-          test "${{ steps.prepare.outcome }}" = "success"
-          test "${{ steps.dr3_spectra.outcome }}" = "success"
+          test "${{ steps.acquire.outcome }}" = "success"
+          test "${{ steps.seed.outcome }}" = "success"
+          test "${{ steps.apogee_rv.outcome }}" = "success"
           test "${{ steps.coverage.outcome }}" = "success"
           test "${{ steps.period_score.outcome }}" = "success"
           test "${{ steps.kepler_score.outcome }}" = "success"

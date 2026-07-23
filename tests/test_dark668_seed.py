@@ -74,8 +74,13 @@ def test_build_seed_preserves_exact_population_counts(
     seed, summary = build_seed(frozen_catalogue_dir, "all", None)
     assert len(seed) == 668
     assert seed["source_id"].is_unique
+    assert {"mass", "radius"}.issubset(seed.columns)
+    assert seed["mass"].notna().all()
+    assert seed["radius"].notna().all()
     assert summary["seed"]["population_counts"] == {"MS": 279, "RGB": 389}
-    assert {"source_id", "ra", "dec"}.isdisjoint(_all_keys(summary))
+    assert {"source_id", "ra", "dec", "mass", "radius"}.isdisjoint(
+        _all_keys(summary)
+    )
 
 
 def test_build_seed_supports_rgb_top_n(frozen_catalogue_dir: Path) -> None:

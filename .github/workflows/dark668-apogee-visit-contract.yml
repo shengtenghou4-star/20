@@ -1,0 +1,45 @@
+name: dark668-apogee-visit-contract
+
+on:
+  pull_request:
+    paths:
+      - "src/hou_compact/apogee_dr17.py"
+      - "scripts/probe_apogee_dr17_visit.py"
+      - "tests/test_apogee_dr17.py"
+      - ".github/workflows/dark668-apogee-visit-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-apogee-visit-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-apogee-visit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Validate APOGEE exact-visit logic
+        run: pytest -q tests/test_apogee_dr17.py
+      - name: Probe live APOGEE star-to-visit join
+        run: |
+          mkdir -p outputs
+          python scripts/probe_apogee_dr17_visit.py \
+            --output outputs/apogee_dr17_visit_contract.json
+      - name: Upload candidate-safe visit receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-apogee-visit-contract-${{ github.run_id }}
+          path: outputs/apogee_dr17_visit_contract.json
+          if-no-files-found: warn
+          retention-days: 30

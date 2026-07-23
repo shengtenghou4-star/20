@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,14 @@ from hou_compact.dark668_kepler import (
     score_keplerian_candidates,
 )
 from hou_compact.gaia import sha256_file
+
+_DYNAMICS_REQUIRED_COLUMNS = (
+    "period_days",
+    "semi_amplitude_kms",
+    "eccentricity",
+    "delta_bic_circular_minus_keplerian",
+    "reduced_chi2",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,6 +61,36 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def normalize_circular_score_schema(frame: pd.DataFrame | None) -> pd.DataFrame | None:
+    """Permit a legitimate all-unscored period table without inventing evidence."""
+
+    if frame is None:
+        return None
+    output = frame.copy()
+    required = {"source_id", "status"}
+    missing = sorted(required - set(output.columns))
+    if missing:
+        raise KeyError(f"circular_scores are missing columns: {missing}")
+    if "delta_bic_constant_minus_periodic" not in output.columns:
+        scored = output["status"].astype("string").eq("scored")
+        if scored.any():
+            raise KeyError(
+                "circular_scores contain scored rows but no delta-BIC column"
+            )
+        output["delta_bic_constant_minus_periodic"] = math.nan
+    return output
+
+
+def ensure_dynamics_input_schema(scores: pd.DataFrame) -> pd.DataFrame:
+    """Emit physical-fit columns even when no target reached Kepler fitting."""
+
+    output = scores.copy()
+    for column in _DYNAMICS_REQUIRED_COLUMNS:
+        if column not in output.columns:
+            output[column] = math.nan
+    return output
+
+
 def main() -> None:
     args = parse_args()
     candidates = pd.read_csv(args.candidates, dtype={"source_id": "string"})
@@ -61,6 +100,7 @@ def main() -> None:
         if args.circular_scores is not None
         else None
     )
+    circular_scores = normalize_circular_score_schema(circular_scores)
     config = KeplerianConfig(
         minimum_independent_visits=args.minimum_visits,
         minimum_circular_delta_bic=args.minimum_circular_delta_bic,
@@ -82,10 +122,11 @@ def main() -> None:
         circular_scores,
         config,
     )
+    scores = ensure_dynamics_input_schema(scores)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     scores.to_csv(args.output, index=False)
     payload = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "candidate_input_sha256": sha256_file(args.candidates),
         "epoch_input_sha256": sha256_file(args.epochs),
@@ -101,7 +142,8 @@ def main() -> None:
         "public_commit_policy": "Never commit or upload the source-level Keplerian table.",
         "interpretation_boundary": (
             "A full Keplerian RV fit is a model comparison and follow-up product. It is "
-            "not a compact-object classification or a novelty claim."
+            "not a compact-object classification or a novelty claim. A zero-preselection "
+            "result is retained as a complete scientific outcome rather than an error."
         ),
     }
     args.safe_summary.parent.mkdir(parents=True, exist_ok=True)

@@ -1,60 +1,46 @@
 #!/usr/bin/env python3
-"""Discover first-party LAMOST TAP tables carrying per-spectrum RV errors.
+"""Validate the anonymous LAMOST DR8 v2.0 ConeSearch RV contract.
 
-This command queries TAP_SCHEMA only. It never requests catalogue source rows,
-identifiers, coordinates, spectra, or radial-velocity measurements. A bounded,
-candidate-safe diagnostic is written even when endpoint discovery or schema access
-fails, while the command still exits non-zero so transport failures cannot look green.
+The official example cone is used only to inspect the returned column contract in
+memory. No coordinates, source identifiers, radial velocities, or row values are
+persisted. Position is accepted only as row discovery; downstream identity still
+requires exact returned Gaia DR3 character equality.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import re
 from pathlib import Path
-from typing import Any
 
-import pandas as pd
-import pyvo
-
+from hou_compact.lamost_conesearch import query_lamost_cone
+from hou_compact.lamost_dr3_spectra import DR3SpectrumSpec
 from hou_compact.lamost_openapi import discover_openapi_contract
 
-
-TARGET_COLUMNS = (
-    "obsid",
-    "gaia_source_id",
-    "rv",
-    "rv_err",
-    "snrg",
-    "snri",
-    "fibermask",
-)
 _CLAIM_BOUNDARY = (
-    "TAP_SCHEMA metadata only. No catalogue rows, source identifiers, coordinates, "
-    "spectra, radial velocities, or candidate classifications were requested."
+    "One arbitrary public cone is inspected in memory only. No row values, source "
+    "identifiers, coordinates, spectra, or radial velocities are persisted. Position "
+    "is discovery only; exact returned Gaia DR3 character equality remains mandatory."
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--openapi-root", default="https://www.lamost.org/openapi")
+    parser.add_argument(
+        "--conesearch-endpoint",
+        default="https://www.lamost.org/dr8/v2.0/voservice/conesearch",
+    )
     parser.add_argument("--dr-version", default="dr8")
-    parser.add_argument("--sub-version", default="v1.0")
+    parser.add_argument("--sub-version", default="v2.0")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/lamost_tap_rv_schema.json"),
+        default=Path("outputs/lamost_conesearch_contract.json"),
     )
     return parser.parse_args()
-
-
-def _to_frame(result: Any) -> pd.DataFrame:
-    table = result.to_table() if hasattr(result, "to_table") else result
-    frame = table.to_pandas() if hasattr(table, "to_pandas") else pd.DataFrame(table)
-    frame.columns = [str(column).lower() for column in frame.columns]
-    return frame
 
 
 def _write(path: Path, payload: dict[str, object]) -> None:
@@ -64,28 +50,27 @@ def _write(path: Path, payload: dict[str, object]) -> None:
     print(text)
 
 
-def _base_payload(args: argparse.Namespace, query: str) -> dict[str, object]:
-    return {
-        "schema_version": "0.2",
-        "candidate_safe": True,
-        "status": "failure",
-        "release": f"{args.dr_version}/{args.sub_version}",
-        "openapi_root": args.openapi_root,
-        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
-        "target_columns": sorted(TARGET_COLUMNS),
-        "claim_boundary": _CLAIM_BOUNDARY,
-    }
+def _identity_text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("ascii").strip()
+    return str(value).strip()
 
 
 def main() -> None:
     args = parse_args()
-    literals = ", ".join(f"'{column}'" for column in TARGET_COLUMNS)
-    query = (
-        "SELECT table_name, column_name, datatype, description "
-        "FROM TAP_SCHEMA.columns "
-        f"WHERE column_name IN ({literals})"
-    )
-    payload = _base_payload(args, query)
+    spec = DR3SpectrumSpec()
+    payload: dict[str, object] = {
+        "schema_version": "0.9",
+        "candidate_safe": True,
+        "status": "failure",
+        "release": f"{args.dr_version}/{args.sub_version}",
+        "openapi_root": args.openapi_root,
+        "conesearch_endpoint": args.conesearch_endpoint,
+        "transport": "bounded_anonymous_ivoa_conesearch",
+        "diagnostic_scope": "official_example_cone_values_discarded",
+        "frozen_table_contract": spec.to_record(),
+        "claim_boundary": _CLAIM_BOUNDARY,
+    }
     try:
         contract = discover_openapi_contract(
             openapi_root=args.openapi_root,
@@ -93,54 +78,55 @@ def main() -> None:
             sub_version=args.sub_version,
             timeout=args.timeout,
         )
-        tap_urls = [str(value) for value in contract.get("tap_urls", [])]
         payload["openapi_status"] = contract.get("status")
         payload["openapi_receipts"] = contract.get("receipts", {})
-        payload["tap_urls"] = tap_urls
-        if not tap_urls:
-            raise RuntimeError("LAMOST OpenAPI returned no TAP URL")
+        payload["openapi_tables_status"] = contract.get("openapi_tables_status")
 
-        tap_url = tap_urls[0]
-        payload["tap_url"] = tap_url
-        service = pyvo.dal.TAPService(tap_url)
-        frame = _to_frame(service.run_sync(query, maxrec=10_000))
-        required = {"table_name", "column_name"}
-        missing = sorted(required - set(frame.columns))
-        if missing:
-            raise RuntimeError(f"TAP_SCHEMA result missing columns: {missing}")
-
-        grouped: list[dict[str, object]] = []
-        for table_name, group in frame.groupby("table_name", sort=True):
-            columns = sorted({str(value).lower() for value in group["column_name"]})
-            grouped.append(
-                {
-                    "table_name": str(table_name),
-                    "columns": columns,
-                    "has_obsid": "obsid" in columns,
-                    "has_gaia_source_id": "gaia_source_id" in columns,
-                    "has_rv": "rv" in columns,
-                    "has_rv_err": "rv_err" in columns,
-                    "rv_scoring_ready": {"obsid", "rv", "rv_err"}.issubset(columns),
-                }
-            )
-        scoring_tables = [row for row in grouped if row["rv_scoring_ready"]]
+        frame, receipt = query_lamost_cone(
+            args.conesearch_endpoint,
+            ra_deg=10.0004738,
+            dec_deg=40.9952444,
+            radius_deg=0.01,
+            timeout=args.timeout,
+        )
+        returned = {str(column).lower() for column in frame.columns}
+        required = {column.lower() for column in spec.selected_columns}
+        missing = sorted(required - returned)
         payload.update(
             {
-                "matching_table_count": len(grouped),
-                "rv_scoring_table_count": len(scoring_tables),
-                "tables": grouped,
-                "status": "pass" if scoring_tables else "no_scoring_table",
+                "probe_row_count": int(len(frame)),
+                "returned_columns": sorted(returned),
+                "missing_required_columns": missing,
+                "source_row_values_persisted": False,
+                "conesearch_receipt": receipt.to_record(),
+            }
+        )
+        if missing:
+            raise RuntimeError(f"ConeSearch contract missing columns: {missing}")
+        if frame.empty:
+            raise RuntimeError("official example cone returned no rows")
+
+        identity_column = spec.gaia_source_id_column.lower()
+        exact_identity_rows = 0
+        for value in frame[identity_column]:
+            text = _identity_text(value)
+            if re.fullmatch(r"[0-9]+", text):
+                exact_identity_rows += 1
+        if exact_identity_rows < 1:
+            raise RuntimeError(
+                "ConeSearch returned no Gaia DR3 identifiers serialized as exact digits"
+            )
+
+        payload.update(
+            {
+                "status": "pass",
+                "required_columns_present": True,
+                "exact_gaia_dr3_character_rows_ge_1": True,
             }
         )
         _write(args.output, payload)
-        if not scoring_tables:
-            raise RuntimeError("no TAP table exposes obsid, rv, and rv_err together")
     except Exception as error:
-        payload["status"] = (
-            payload["status"]
-            if payload.get("status") == "no_scoring_table"
-            else "failure"
-        )
+        payload["status"] = "failure"
         payload["error_type"] = type(error).__name__
         payload["error"] = str(error)[:2_000]
         _write(args.output, payload)
