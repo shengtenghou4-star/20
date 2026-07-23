@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Validate one public DESI DR1 single-epoch RVTAB file.
+"""Validate the official public DESI DR1 single-epoch RVTAB example.
 
-An arbitrary non-backup coadd row is selected through Astro Data Lab only to
-locate one public Healpix file.  Sample identifiers, locator values, file path,
-RVs, and uncertainties remain in memory; the persisted receipt contains only
-schema names, aggregate row counts, and hashes.
+The DESI DR1 MWS documentation publishes a concrete non-backup example file for
+commissioning survey ``cmx``, program ``other``, HEALPix 2152.  This probe uses
+that stable example only to freeze the FITS/HDU/column contract.  It stores no
+row values, target identifiers, coordinates, RVs, or uncertainties.
 """
 
 from __future__ import annotations
@@ -12,28 +12,23 @@ from __future__ import annotations
 import argparse
 from io import BytesIO
 import json
-import math
 from pathlib import Path
 
 from astropy.io import fits
 import numpy as np
-import pandas as pd
 
-from hou_compact.datacentral_tap import tap_sync_get
-from hou_compact.desi_dr1 import build_sample_query, single_epoch_rvtab_url
 from hou_compact.desi_rvtab import download_rvtab_fits, inspect_rvtab_schema
-from hou_compact.lamost import parse_exact_int_text
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--tap-root",
-        default="https://datalab.noirlab.edu/tap",
-    )
-    parser.add_argument(
-        "--data-root",
-        default="https://data.desi.lbl.gov/public/dr1/vac/dr1/mws/iron/v1.0",
+        "--example-url",
+        default=(
+            "https://data.desi.lbl.gov/public/dr1/vac/dr1/mws/iron/v1.0/"
+            "rv_output/240521/healpix/cmx/other/21/2152/"
+            "rvtab_spectra-cmx-other-2152.fits"
+        ),
     )
     parser.add_argument("--timeout", type=float, default=300.0)
     parser.add_argument(
@@ -44,14 +39,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _column(frame: pd.DataFrame, wanted: str) -> str:
-    mapping = {str(column).strip().lower(): str(column) for column in frame.columns}
-    if wanted.lower() not in mapping:
-        raise RuntimeError(f"DESI sample is missing {wanted}")
-    return mapping[wanted.lower()]
-
-
-def _target_rvtab_contract(body: bytes, targetid: int) -> dict[str, object]:
+def _rvtab_contract(body: bytes) -> dict[str, object]:
     with fits.open(
         BytesIO(body),
         memmap=False,
@@ -61,21 +49,17 @@ def _target_rvtab_contract(body: bytes, targetid: int) -> dict[str, object]:
         if "RVTAB" not in hdul:
             raise RuntimeError("DESI single-epoch file has no RVTAB extension")
         rvtab = hdul["RVTAB"]
-        if rvtab.data is None:
+        if rvtab.data is None or len(rvtab.data) < 1:
             raise RuntimeError("DESI RVTAB extension has no rows")
         names = {str(name).upper() for name in (rvtab.columns.names or [])}
         required = {"TARGETID", "VRAD", "VRAD_ERR", "RVS_WARN", "SUCCESS"}
         missing = sorted(required - names)
         if missing:
             raise RuntimeError(f"DESI RVTAB is missing columns: {missing}")
-        mask = rvtab.data["TARGETID"] == targetid
-        matched = rvtab.data[mask]
-        if len(matched) < 1:
-            raise RuntimeError("sample TARGETID is absent from the located RVTAB file")
-        rv = np.asarray(matched["VRAD"], dtype="float64")
-        rv_error = np.asarray(matched["VRAD_ERR"], dtype="float64")
-        warning = np.asarray(matched["RVS_WARN"])
-        success = np.asarray(matched["SUCCESS"]).astype(bool)
+        rv = np.asarray(rvtab.data["VRAD"], dtype="float64")
+        rv_error = np.asarray(rvtab.data["VRAD_ERR"], dtype="float64")
+        warning = np.asarray(rvtab.data["RVS_WARN"])
+        success = np.asarray(rvtab.data["SUCCESS"]).astype(bool)
         finite_pair = np.isfinite(rv) & np.isfinite(rv_error) & (rv_error > 0)
         quality = finite_pair & (warning == 0) & success
         time_columns = sorted(
@@ -83,9 +67,8 @@ def _target_rvtab_contract(body: bytes, targetid: int) -> dict[str, object]:
         )
         return {
             "rvtab_row_count": int(len(rvtab.data)),
-            "sample_target_epoch_count": int(len(matched)),
-            "sample_target_finite_rv_positive_error_count": int(finite_pair.sum()),
-            "sample_target_quality_pass_count": int(quality.sum()),
+            "finite_rv_positive_error_count": int(finite_pair.sum()),
+            "quality_pass_count": int(quality.sum()),
             "rvtab_required_columns_present": True,
             "rvtab_time_locator_columns": time_columns,
         }
@@ -94,60 +77,30 @@ def _target_rvtab_contract(body: bytes, targetid: int) -> dict[str, object]:
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "status": "failure",
         "release": "DESI DR1 MWS single-epoch RVTAB",
-        "sample_values_persisted": False,
+        "example_values_persisted": False,
         "backup_program_excluded": True,
         "claim_boundary": (
-            "This probe validates one arbitrary public non-backup single-epoch file and "
-            "its target/RV/time schema only. It is not a Dark-668 overlap, variability, "
-            "binary, compact-object, or novelty result."
+            "This probe validates the official public non-backup example file and its "
+            "RVTAB/FIBERMAP/SCORES/GAIA schema only. It is not a Dark-668 overlap, "
+            "variability, binary, compact-object, or novelty result."
         ),
     }
     try:
-        sample, tap_receipt = tap_sync_get(
-            args.tap_root,
-            build_sample_query(),
-            maxrec=1,
-            timeout=args.timeout,
-        )
-        if len(sample) != 1:
-            raise RuntimeError("DESI sample query did not return exactly one row")
-        row = sample.iloc[0]
-        parse_exact_int_text(row[_column(sample, "source_id")], name="desi.source_id")
-        targetid = parse_exact_int_text(
-            row[_column(sample, "targetid")], name="desi.targetid"
-        )
-        healpix = parse_exact_int_text(
-            row[_column(sample, "healpix")], name="desi.healpix"
-        )
-        survey = str(row[_column(sample, "survey")]).strip().lower()
-        program = str(row[_column(sample, "program")]).strip().lower()
-        if program == "backup":
-            raise RuntimeError("DESI sample unexpectedly used backup program")
-        url = single_epoch_rvtab_url(
-            args.data_root,
-            survey=survey,
-            program=program,
-            healpix=healpix,
-        )
         body, file_receipt = download_rvtab_fits(
-            url,
+            args.example_url,
             timeout=args.timeout,
         )
         schema = inspect_rvtab_schema(body)
-        contract = _target_rvtab_contract(body, targetid)
-        if int(contract["sample_target_finite_rv_positive_error_count"]) < 1:
-            raise RuntimeError("sample target has no finite single-epoch RV/error pair")
-        if not math.isfinite(float(file_receipt.response_bytes)):
-            raise RuntimeError("invalid DESI file-size receipt")
-
+        contract = _rvtab_contract(body)
+        if int(contract["finite_rv_positive_error_count"]) < 1:
+            raise RuntimeError("DESI example contains no finite RV/error pair")
         payload.update(
             {
                 "status": "pass",
-                "tap_receipt": tap_receipt.to_record(),
                 "file_receipt": file_receipt.to_record(),
                 "hdu_columns": {
                     name: list(columns) for name, columns in sorted(schema.items())
