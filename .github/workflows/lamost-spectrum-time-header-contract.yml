@@ -6,7 +6,9 @@ on:
     paths:
       - '.github/workflows/lamost-spectrum-time-header-contract.yml'
       - 'scripts/probe_lamost_spectrum_time_header.py'
+      - 'scripts/probe_lamost_spectrum_time_header_v2.py'
       - 'tests/test_probe_lamost_spectrum_time_header.py'
+      - 'tests/test_probe_lamost_spectrum_time_header_v2.py'
   workflow_dispatch:
 
 permissions:
@@ -31,13 +33,16 @@ jobs:
         run: |
           python -m py_compile \
             scripts/probe_lamost_spectrum_time_header.py \
-            tests/test_probe_lamost_spectrum_time_header.py
+            scripts/probe_lamost_spectrum_time_header_v2.py \
+            tests/test_probe_lamost_spectrum_time_header.py \
+            tests/test_probe_lamost_spectrum_time_header_v2.py
           python tests/test_probe_lamost_spectrum_time_header.py -v
-      - name: Probe official public spectrum info and FITS header
+          python tests/test_probe_lamost_spectrum_time_header_v2.py -v
+      - name: Probe official public spectrum info and gzip-aware FITS header
         id: probe
         continue-on-error: true
         run: |
-          python scripts/probe_lamost_spectrum_time_header.py \
+          python scripts/probe_lamost_spectrum_time_header_v2.py \
             --output lamost_spectrum_time_header_contract.json \
             > lamost_spectrum_time_header_probe.log 2>&1
       - name: Upload candidate-safe contract
