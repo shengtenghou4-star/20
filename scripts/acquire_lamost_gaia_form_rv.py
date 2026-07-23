@@ -7,7 +7,9 @@ import argparse
 import json
 from pathlib import Path
 
-from hou_compact.lamost_gaia_form_rv_v2 import acquire_gaia_form_rv_sessioned
+from hou_compact.lamost_gaia_form_rv_v3 import (
+    acquire_gaia_form_rv_sessioned_zero_aware,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,7 +41,7 @@ def main() -> None:
     args = parse_args()
     if args.maximum_response_mb <= 0:
         raise ValueError("--maximum-response-mb must be positive")
-    summary = acquire_gaia_form_rv_sessioned(
+    summary = acquire_gaia_form_rv_sessioned_zero_aware(
         bridge_input=args.bridge,
         rows_output=args.rows_output,
         overlap_output=args.overlap_output,
