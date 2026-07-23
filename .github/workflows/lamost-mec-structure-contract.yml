@@ -1,0 +1,151 @@
+name: LAMOST LRS MEC structure contract
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/lamost-mec-structure-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Stream bounded public sample and fingerprint structure
+        run: |
+          python - <<'PY'
+          import csv
+          import gzip
+          import io
+          import json
+          import re
+          import urllib.request
+          from collections import Counter
+          from pathlib import Path
+
+          url = 'https://www.lamost.org/dr8/v1.0/catdl?name=dr8_v1.0_LRS_mec.csv.gz'
+          request = urllib.request.Request(
+              url,
+              headers={
+                  'User-Agent': 'HOU-COMPACT/1.0 public MEC structure contract',
+                  'Accept-Encoding': 'identity',
+              },
+          )
+          response = urllib.request.urlopen(request, timeout=180)
+          compressed = gzip.GzipFile(fileobj=response)
+          text = io.TextIOWrapper(compressed, encoding='utf-8-sig', errors='strict', newline='')
+          header = text.readline()
+          if not header:
+              raise RuntimeError('empty MEC stream')
+          delimiter_counts = {d: header.count(d) for d in (',', '|', '\t')}
+          delimiter = max(delimiter_counts, key=delimiter_counts.get)
+          if delimiter_counts[delimiter] < 2:
+              raise RuntimeError(f'ambiguous MEC delimiter counts: {delimiter_counts}')
+          reader = csv.DictReader(io.StringIO(header + ''.join(text.readline() for _ in range(500))), delimiter=delimiter, strict=True)
+          headers = [str(x).strip().lower().lstrip('\ufeff') for x in (reader.fieldnames or [])]
+          required = {'obs_number', 'obsid_list', 'midmjm_list'}
+          if not required.issubset(headers):
+              raise RuntimeError(f'missing MEC columns: {sorted(required - set(headers))}')
+
+          exact_int = re.compile(r'^[0-9]+$')
+          decimal_int = re.compile(r'^[0-9]+(?:\.0+)?$')
+          separators = ('-', ',', ';', ' ', '|', '_', ':', '/')
+          stats = Counter()
+          signature_counts = Counter()
+          rows = 0
+
+          def classify_list(value: str, expected: int, prefix: str) -> None:
+              token = value.strip()
+              stats[f'{prefix}_empty'] += int(not token)
+              stats[f'{prefix}_has_brackets'] += int(any(ch in token for ch in '[](){}'))
+              stats[f'{prefix}_has_quotes'] += int(('"' in token) or ("'" in token))
+              stats[f'{prefix}_has_decimal_point'] += int('.' in token)
+              stats[f'{prefix}_has_exponent'] += int(('e' in token.lower()))
+              for sep in separators:
+                  parts = token.split(sep) if token else []
+                  label = {
+                      '-': 'hyphen', ',': 'comma', ';': 'semicolon', ' ': 'space',
+                      '|': 'pipe', '_': 'underscore', ':': 'colon', '/': 'slash',
+                  }[sep]
+                  stats[f'{prefix}_{label}_present'] += int(sep in token)
+                  stats[f'{prefix}_{label}_count_matches'] += int(bool(parts) and len(parts) == expected)
+                  stats[f'{prefix}_{label}_all_exact_int'] += int(bool(parts) and all(exact_int.fullmatch(p or '') for p in parts))
+                  stats[f'{prefix}_{label}_all_decimal_int'] += int(bool(parts) and all(decimal_int.fullmatch(p or '') for p in parts))
+                  stats[f'{prefix}_{label}_valid_exact'] += int(
+                      bool(parts) and len(parts) == expected and all(exact_int.fullmatch(p or '') for p in parts)
+                  )
+                  stats[f'{prefix}_{label}_valid_decimal_int'] += int(
+                      bool(parts) and len(parts) == expected and all(decimal_int.fullmatch(p or '') for p in parts)
+                  )
+              signature = (
+                  len(token),
+                  token[:1].isdigit(),
+                  token[-1:].isdigit(),
+                  tuple((sep, token.count(sep)) for sep in separators if sep in token),
+                  '.' in token,
+                  any(ch in token for ch in '[](){}'),
+              )
+              signature_counts[(prefix, signature)] += 1
+
+          for row in reader:
+              if rows >= 500:
+                  break
+              rows += 1
+              raw_count = str(row.get('obs_number', '')).strip()
+              stats['obs_number_exact_int'] += int(bool(exact_int.fullmatch(raw_count)))
+              stats['obs_number_decimal_int'] += int(bool(decimal_int.fullmatch(raw_count)))
+              if decimal_int.fullmatch(raw_count):
+                  expected = int(float(raw_count))
+              else:
+                  expected = -1
+              stats['obs_number_at_least_2'] += int(expected >= 2)
+              classify_list(str(row.get('obsid_list', '')), expected, 'obsid')
+              classify_list(str(row.get('midmjm_list', '')), expected, 'midmjm')
+
+          safe_signatures = []
+          for (prefix, signature), count in signature_counts.most_common(20):
+              length, starts_digit, ends_digit, sep_counts, has_dot, has_brackets = signature
+              safe_signatures.append({
+                  'field': prefix,
+                  'rows': count,
+                  'length': length,
+                  'starts_digit': starts_digit,
+                  'ends_digit': ends_digit,
+                  'separator_counts': dict(sep_counts),
+                  'has_decimal_point': has_dot,
+                  'has_brackets': has_brackets,
+              })
+
+          result = {
+              'schema_version': '0.1',
+              'candidate_safe': True,
+              'source': 'official LAMOST DR8 v1.0 LRS multi-epoch catalogue',
+              'sample_rows': rows,
+              'delimiter': repr(delimiter),
+              'delimiter_counts_in_header': delimiter_counts,
+              'columns': headers,
+              'aggregate_structure_counts': dict(sorted(stats.items())),
+              'common_value_shapes_without_values': safe_signatures,
+              'privacy_contract': 'No row value, source identifier, obsid, coordinate, RV, or candidate membership is retained.',
+          }
+          Path('lamost_mec_structure_contract.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          if rows < 100:
+              raise RuntimeError(f'only {rows} sample rows parsed')
+          PY
+      - name: Upload candidate-safe structure contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: lamost-mec-structure-contract-${{ github.run_id }}
+          path: lamost_mec_structure_contract.json
+          if-no-files-found: error
+          retention-days: 30
