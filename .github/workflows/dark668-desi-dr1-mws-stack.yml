@@ -1,9 +1,6 @@
 name: dark668-desi-dr1-mws-stack
 
 on:
-  pull_request:
-    paths:
-      - "triggers/dark668-desi-dr1-mws-stack-*"
   workflow_dispatch:
 
 permissions:
