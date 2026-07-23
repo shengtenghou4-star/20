@@ -147,8 +147,51 @@ jobs:
                   },
               }
 
+          time_shapes = {field: shape(field) for field in ('obsdate', 'lmjd', 'mjd')}
+          row_count = len(table.rows)
+          mjd_places = [
+              int(key) for key, count in time_shapes['mjd']['decimal_places_histogram'].items()
+              if count > 0
+          ]
+          lmjd_places = [
+              int(key) for key, count in time_shapes['lmjd']['decimal_places_histogram'].items()
+              if count > 0
+          ]
+          assessment = {
+              'obsdate_all_iso_datetime': (
+                  row_count > 0
+                  and time_shapes['obsdate']['shape_counts']['iso_datetime'] == row_count
+              ),
+              'obsdate_all_date_only': (
+                  row_count > 0
+                  and time_shapes['obsdate']['shape_counts']['iso_date'] == row_count
+              ),
+              'mjd_all_ordinary_decimal': (
+                  row_count > 0
+                  and time_shapes['mjd']['shape_counts']['ordinary_decimal'] == row_count
+              ),
+              'mjd_min_decimal_places': min(mjd_places) if mjd_places else None,
+              'mjd_all_at_least_4_decimal_places': bool(mjd_places and min(mjd_places) >= 4),
+              'lmjd_all_ordinary_decimal': (
+                  row_count > 0
+                  and time_shapes['lmjd']['shape_counts']['ordinary_decimal'] == row_count
+              ),
+              'lmjd_min_decimal_places': min(lmjd_places) if lmjd_places else None,
+              'targeted_form_has_candidate_precise_time_field': bool(
+                  row_count > 0
+                  and (
+                      time_shapes['obsdate']['shape_counts']['iso_datetime'] == row_count
+                      or (mjd_places and min(mjd_places) >= 4)
+                  )
+              ),
+              'precision_decision_boundary': (
+                  'Shape-only public-sample evidence; private exact-obsid agreement with MEC '
+                  'is still required before replacing the MEC bridge.'
+              ),
+          }
+
           result = {
-              'schema_version': '0.1',
+              'schema_version': '0.2',
               'candidate_safe': True,
               'status': 'success',
               'official_sample_file': {
@@ -163,13 +206,12 @@ jobs:
                   'bytes': len(raw),
                   'sha256': hashlib.sha256(raw).hexdigest(),
                   'delimiter': table.delimiter,
-                  'row_count': len(table.rows),
+                  'row_count': row_count,
                   'column_count': len(table.columns),
                   'columns': list(table.columns),
               },
-              'time_field_shapes': {
-                  field: shape(field) for field in ('obsdate', 'lmjd', 'mjd')
-              },
+              'time_field_shapes': time_shapes,
+              'replacement_assessment': assessment,
               'privacy_contract': (
                   'No sample identifier, row value, obsid, coordinate, RV, or time value is retained.'
               ),
