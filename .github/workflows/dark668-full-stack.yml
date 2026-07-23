@@ -7,7 +7,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dark668-full-stack-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-full-stack-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -35,16 +35,13 @@ jobs:
             tests/test_dark668.py \
             tests/test_dark668_seed.py \
             tests/test_dark668_coverage.py \
-            tests/test_dark668_lamost.py \
             tests/test_dark668_rv.py \
             tests/test_dark668_kepler.py \
             tests/test_dark668_dynamics.py \
-            tests/test_lamost_openapi_sql.py \
-            tests/test_lamost_tap_get.py \
-            tests/test_lamost_tap_mec.py \
-            tests/test_lamost_tap_rv.py
+            tests/test_lamost_dr3_spectra.py \
+            tests/test_lamost_openapi_sql.py
 
-      - name: Acquire frozen candidate catalogues and exact Gaia bridge
+      - name: Acquire frozen candidate catalogues and build 668-source seed
         id: prepare
         if: steps.install.outcome == 'success' && steps.tests.outcome == 'success'
         continue-on-error: true
@@ -58,72 +55,41 @@ jobs:
             --population all \
             --output outputs/private/dark668_seed.csv \
             --safe-summary outputs/dark668_seed_summary.json
-          python scripts/query_gaia_dr2_bridge.py \
-            outputs/private/dark668_seed.csv \
-            --output outputs/private/dark668_gaia_dr2_bridge.csv \
-            --neighbourhood-output outputs/private/dark668_gaia_dr2_neighbourhood.csv \
-            --batch-size 200 \
-            --maxrec-per-batch 4000 \
-            --overwrite \
-            > outputs/private/dark668_gaia_bridge.stdout.json
 
-      - name: Query exact LAMOST multiple-epoch rows through OpenAPI SQL
-        id: mec_tap
+      - name: Query exact Gaia DR3 LAMOST DR8 v2.0 spectra
+        id: dr3_spectra
         if: steps.prepare.outcome == 'success'
         continue-on-error: true
         run: |
-          python scripts/query_dark668_lamost_mec_tap.py \
-            outputs/private/dark668_gaia_dr2_bridge.csv \
-            --output outputs/private/dark668_lamost_epochs.csv \
-            --safe-summary outputs/dark668_lamost_mec_tap_summary.json \
-            --batch-size 50 \
-            --maxrec-per-batch 100 \
+          python scripts/query_dark668_lamost_dr3_spectra.py \
+            outputs/private/dark668_seed.csv \
+            --output outputs/private/dark668_lamost_dr3_epochs.csv \
+            --safe-summary outputs/dark668_lamost_dr3_summary.json \
+            --dr-version dr8 \
+            --sub-version v2.0 \
+            --batch-size 25 \
+            --maxrec-per-batch 5000 \
             --timeout 180
 
       - name: Summarize cadence and raw RV coverage
         id: coverage
-        if: steps.mec_tap.outcome == 'success'
+        if: steps.dr3_spectra.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/summarize_dark668_lamost_coverage.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_epochs.csv \
+            outputs/private/dark668_lamost_dr3_epochs.csv \
             --output outputs/private/dark668_lamost_coverage.csv \
             --safe-summary outputs/dark668_lamost_coverage_summary.json
 
-      - name: Acquire exact per-spectrum RV errors through OpenAPI SQL
-        id: tap_rv
-        if: steps.mec_tap.outcome == 'success'
-        continue-on-error: true
-        run: |
-          python scripts/acquire_lamost_tap_rv.py \
-            outputs/private/dark668_lamost_epochs.csv \
-            --output outputs/private/dark668_lamost_tap_rv.csv \
-            --safe-summary outputs/dark668_lamost_tap_rv_summary.json \
-            --batch-size 100 \
-            --maxrec-per-batch 250 \
-            --timeout 180
-
-      - name: Join exact RV products and enforce quality gates
-        id: join_rv
-        if: steps.tap_rv.outcome == 'success'
-        continue-on-error: true
-        run: |
-          python scripts/join_dark668_lamost_tap_rv.py \
-            outputs/private/dark668_lamost_epochs.csv \
-            outputs/private/dark668_lamost_tap_rv.csv \
-            --output outputs/private/dark668_lamost_scorable_epochs.csv \
-            --safe-summary outputs/dark668_lamost_join_summary.json \
-            --maximum-rv-difference-kms 1.0
-
       - name: Run period-prior RV coherence triage
         id: period_score
-        if: steps.join_rv.outcome == 'success'
+        if: steps.dr3_spectra.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/score_dark668_period_prior.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_scorable_epochs.csv \
+            outputs/private/dark668_lamost_dr3_epochs.csv \
             --output outputs/private/dark668_period_prior_scores.csv \
             --safe-summary outputs/dark668_period_prior_summary.json \
             --minimum-visits 5 \
@@ -138,7 +104,7 @@ jobs:
         run: |
           python scripts/score_dark668_keplerian.py \
             outputs/private/dark668_seed.csv \
-            outputs/private/dark668_lamost_scorable_epochs.csv \
+            outputs/private/dark668_lamost_dr3_epochs.csv \
             --circular-scores outputs/private/dark668_period_prior_scores.csv \
             --output outputs/private/dark668_keplerian_scores.csv \
             --safe-summary outputs/dark668_keplerian_summary.json \
@@ -171,10 +137,8 @@ jobs:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
-          MEC_TAP_OUTCOME: ${{ steps.mec_tap.outcome }}
+          DR3_SPECTRA_OUTCOME: ${{ steps.dr3_spectra.outcome }}
           COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
-          TAP_RV_OUTCOME: ${{ steps.tap_rv.outcome }}
-          JOIN_OUTCOME: ${{ steps.join_rv.outcome }}
           PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
           KEPLER_OUTCOME: ${{ steps.kepler_score.outcome }}
           DYNAMICS_OUTCOME: ${{ steps.dynamics.outcome }}
@@ -188,10 +152,8 @@ jobs:
           names = [
               'dark668_catalogue_summary.json',
               'dark668_seed_summary.json',
-              'dark668_lamost_mec_tap_summary.json',
+              'dark668_lamost_dr3_summary.json',
               'dark668_lamost_coverage_summary.json',
-              'dark668_lamost_tap_rv_summary.json',
-              'dark668_lamost_join_summary.json',
               'dark668_period_prior_summary.json',
               'dark668_keplerian_summary.json',
               'dark668_dynamical_summary.json',
@@ -202,33 +164,35 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.5',
+              'schema_version': '0.6',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
               'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'identity_route': (
+                  'Direct exact Gaia DR3 character equality in LAMOST DR8 v2.0 stellar; '
+                  'no DR2 bridge, float identity, MEC expansion, or approximate match.'
+              ),
               'steps': {
                   'install': os.environ.get('INSTALL_OUTCOME'),
                   'tests': os.environ.get('TESTS_OUTCOME'),
                   'prepare': os.environ.get('PREPARE_OUTCOME'),
-                  'mec_openapi_sql': os.environ.get('MEC_TAP_OUTCOME'),
+                  'direct_dr3_spectra': os.environ.get('DR3_SPECTRA_OUTCOME'),
                   'coverage': os.environ.get('COVERAGE_OUTCOME'),
-                  'rv_openapi_sql': os.environ.get('TAP_RV_OUTCOME'),
-                  'join_rv': os.environ.get('JOIN_OUTCOME'),
                   'period_score': os.environ.get('PERIOD_OUTCOME'),
                   'kepler_score': os.environ.get('KEPLER_OUTCOME'),
                   'dynamics': os.environ.get('DYNAMICS_OUTCOME'),
               },
               'execution_policy': (
-                  'Manual dispatch only until the lightweight public-schema contract passes, '
-                  'to avoid repeating expensive catalogue and Gaia bridge work.'
+                  'Manual dispatch only until the lightweight direct-DR3 contract passes, '
+                  'to avoid repeating expensive catalogue work.'
               ),
               'receipts': receipts,
               'claim_boundary': (
-                  'The stack produces a reproducible follow-up queue, orbit-model audits, '
-                  'and SB1 physical-consistency checks only. No source is classified as a '
-                  'binary, neutron star, black hole, or compact object without downstream '
-                  'stellar, contamination, robustness, and novelty gates.'
+                  'The stack produces an exact follow-up dataset, orbit-model audits, and '
+                  'SB1 physical-consistency checks only. No source is classified as a binary, '
+                  'neutron star, black hole, or compact object without downstream stellar, '
+                  'contamination, robustness, and novelty gates.'
               ),
           }
           Path('outputs/dark668_full_stack_summary.json').write_text(
@@ -293,10 +257,8 @@ jobs:
           test "${{ steps.install.outcome }}" = "success"
           test "${{ steps.tests.outcome }}" = "success"
           test "${{ steps.prepare.outcome }}" = "success"
-          test "${{ steps.mec_tap.outcome }}" = "success"
+          test "${{ steps.dr3_spectra.outcome }}" = "success"
           test "${{ steps.coverage.outcome }}" = "success"
-          test "${{ steps.tap_rv.outcome }}" = "success"
-          test "${{ steps.join_rv.outcome }}" = "success"
           test "${{ steps.period_score.outcome }}" = "success"
           test "${{ steps.kepler_score.outcome }}" = "success"
           test "${{ steps.dynamics.outcome }}" = "success"
