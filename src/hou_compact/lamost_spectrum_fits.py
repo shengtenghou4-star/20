@@ -3,15 +3,17 @@
 The public ConeSearch catalogue supplies exact Gaia DR3 identity and a spectrum
 ``obsid``. This module retrieves the corresponding low-resolution FITS product
 from the documented OpenAPI spectrum endpoint and reads the LASP radial velocity
-and uncertainty from FITS headers. Source values remain private research data;
-public receipts contain only response hashes and schema-level metadata.
+and uncertainty from FITS headers. LAMOST commonly serves these products as
+``.fits.gz`` while advertising ``application/fits``; gzip decoding is therefore
+explicit, bounded, and recorded. Source values remain private research data.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from io import BytesIO
+import gzip
 import hashlib
+from io import BytesIO
 import json
 import math
 import re
@@ -33,6 +35,8 @@ class SpectrumFITSReceipt:
     content_type: str
     sha256: str
     response_kind: str
+    decoded_bytes: int = 0
+    decoded_sha256: str | None = None
     hdu_count: int = 0
     header_keys: tuple[str, ...] = ()
     top_level_keys: tuple[str, ...] = ()
@@ -96,21 +100,22 @@ def _non_fits_receipt(
     attempts: int,
     content_type: str,
     body: bytes,
+    response_kind: str | None = None,
 ) -> SpectrumFITSReceipt:
     preview = body[:8192].lstrip().lower()
-    response_kind = "non_fits_binary"
+    kind = response_kind or "non_fits_binary"
     top_level_keys: tuple[str, ...] = ()
     diagnostic_code: str | None = None
     diagnostic_description: str | None = None
     if preview.startswith(b"<!doctype html") or b"<html" in preview:
-        response_kind = "html"
+        kind = "html"
     else:
         try:
             payload = json.loads(body.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             pass
         else:
-            response_kind = "json_object" if isinstance(payload, dict) else "json_other"
+            kind = "json_object" if isinstance(payload, dict) else "json_other"
             if isinstance(payload, dict):
                 lowered = {str(key).lower(): value for key, value in payload.items()}
                 top_level_keys = tuple(sorted(str(key) for key in payload)[:50])
@@ -130,11 +135,57 @@ def _non_fits_receipt(
         response_bytes=len(body),
         content_type=content_type,
         sha256=hashlib.sha256(body).hexdigest(),
-        response_kind=response_kind,
+        response_kind=kind,
         top_level_keys=top_level_keys,
         diagnostic_error_code=diagnostic_code,
         diagnostic_error_description=diagnostic_description,
     )
+
+
+def _decode_fits_payload(
+    body: bytes,
+    *,
+    maximum_decoded_bytes: int,
+) -> tuple[bytes, str]:
+    """Return uncompressed FITS bytes and a provenance label."""
+
+    if body[:6] == b"SIMPLE":
+        return body, "fits"
+    if body[:2] != b"\x1f\x8b":
+        raise LamostSpectrumFITSError(
+            "spectrum endpoint returned neither FITS nor gzip-compressed FITS"
+        )
+    try:
+        with gzip.GzipFile(fileobj=BytesIO(body), mode="rb") as handle:
+            decoded = handle.read(maximum_decoded_bytes + 1)
+    except (EOFError, OSError) as error:
+        raise LamostSpectrumFITSError(
+            f"spectrum gzip payload could not be decoded: {type(error).__name__}"
+        ) from error
+    if len(decoded) > maximum_decoded_bytes:
+        raise LamostSpectrumFITSError(
+            "decoded spectrum FITS exceeded the byte limit"
+        )
+    if decoded[:6] != b"SIMPLE":
+        raise LamostSpectrumFITSError(
+            "decoded gzip payload did not contain a FITS primary header"
+        )
+    return decoded, "gzip_fits"
+
+
+def _read_fits_headers(body: bytes) -> list[fits.Header]:
+    try:
+        with fits.open(
+            BytesIO(body),
+            memmap=False,
+            lazy_load_hdus=False,
+            ignore_missing_simple=False,
+        ) as hdul:
+            return [hdu.header.copy() for hdu in hdul]
+    except Exception as error:
+        raise LamostSpectrumFITSError(
+            f"spectrum response was not readable FITS: {type(error).__name__}"
+        ) from error
 
 
 def download_lamost_spectrum_fits(
@@ -147,9 +198,10 @@ def download_lamost_spectrum_fits(
     timeout: float = 180.0,
     retries: int = 2,
     maximum_response_bytes: int = 64 * 1024 * 1024,
+    maximum_decoded_bytes: int = 128 * 1024 * 1024,
     opener: Any = urlopen,
 ) -> tuple[bytes, SpectrumFITSReceipt]:
-    """Download one bounded public spectrum FITS product by exact obsid."""
+    """Download one bounded public spectrum product by exact obsid."""
 
     root = openapi_root.rstrip("/")
     if not root.startswith("https://"):
@@ -164,6 +216,8 @@ def download_lamost_spectrum_fits(
         raise ValueError("retries must be non-negative")
     if maximum_response_bytes < 2880:
         raise ValueError("maximum_response_bytes must be at least one FITS block")
+    if maximum_decoded_bytes < 2880:
+        raise ValueError("maximum_decoded_bytes must be at least one FITS block")
 
     endpoint = f"{root}/{dr_version}/{sub_version}/{resolution}/spectrum/fits"
     url = f"{endpoint}?{urlencode({'obsid': obsid})}"
@@ -172,7 +226,7 @@ def download_lamost_spectrum_fits(
         method="GET",
         headers={
             "User-Agent": "HOU-COMPACT/0.1 bounded LAMOST FITS client",
-            "Accept": "application/fits,application/octet-stream,*/*;q=0.1",
+            "Accept": "application/fits,application/gzip,application/octet-stream,*/*;q=0.1",
         },
     )
     last_error: BaseException | None = None
@@ -195,13 +249,20 @@ def download_lamost_spectrum_fits(
                 raise LamostSpectrumFITSError(
                     f"spectrum FITS returned HTTP {status}", receipt=receipt
                 )
-            if body[:6] != b"SIMPLE":
+            try:
+                decoded, response_kind = _decode_fits_payload(
+                    body,
+                    maximum_decoded_bytes=maximum_decoded_bytes,
+                )
+            except LamostSpectrumFITSError as error:
+                kind = "gzip_non_fits" if body[:2] == b"\x1f\x8b" else None
                 receipt = _non_fits_receipt(
                     endpoint=endpoint,
                     status=status,
                     attempts=attempt + 1,
                     content_type=content_type,
                     body=body,
+                    response_kind=kind,
                 )
                 detail = ": ".join(
                     value
@@ -211,22 +272,12 @@ def download_lamost_spectrum_fits(
                     )
                     if value
                 )
-                message = "spectrum endpoint did not return a FITS primary header"
+                message = str(error)
                 if detail:
                     message = f"{message}: {detail}"
-                raise LamostSpectrumFITSError(message, receipt=receipt)
-            try:
-                with fits.open(
-                    BytesIO(body),
-                    memmap=False,
-                    lazy_load_hdus=False,
-                    ignore_missing_simple=False,
-                ) as hdul:
-                    headers = [hdu.header.copy() for hdu in hdul]
-            except Exception as error:
-                raise LamostSpectrumFITSError(
-                    f"spectrum response was not readable FITS: {type(error).__name__}"
-                ) from error
+                raise LamostSpectrumFITSError(message, receipt=receipt) from error
+
+            headers = _read_fits_headers(decoded)
             header_keys = tuple(
                 sorted(
                     {
@@ -244,11 +295,13 @@ def download_lamost_spectrum_fits(
                 response_bytes=len(body),
                 content_type=content_type,
                 sha256=hashlib.sha256(body).hexdigest(),
-                response_kind="fits",
+                response_kind=response_kind,
+                decoded_bytes=len(decoded),
+                decoded_sha256=hashlib.sha256(decoded).hexdigest(),
                 hdu_count=len(headers),
                 header_keys=header_keys,
             )
-            return body, receipt
+            return decoded, receipt
         except HTTPError as error:
             last_error = error
             body = error.read(maximum_response_bytes + 1)
@@ -278,20 +331,9 @@ def download_lamost_spectrum_fits(
 def extract_lasp_rv_from_fits(body: bytes) -> dict[str, float]:
     """Extract finite LASP RV and positive uncertainty from FITS headers."""
 
-    try:
-        with fits.open(
-            BytesIO(body),
-            memmap=False,
-            lazy_load_hdus=False,
-            ignore_missing_simple=False,
-        ) as hdul:
-            headers = [hdu.header for hdu in hdul]
-            rv = _finite_header_value(headers, _RV_ALIASES)
-            rv_error = _finite_header_value(headers, _RV_ERROR_ALIASES)
-    except Exception as error:
-        raise LamostSpectrumFITSError(
-            f"unable to inspect spectrum FITS headers: {type(error).__name__}"
-        ) from error
+    headers = _read_fits_headers(body)
+    rv = _finite_header_value(headers, _RV_ALIASES)
+    rv_error = _finite_header_value(headers, _RV_ERROR_ALIASES)
     if rv is None:
         raise LamostSpectrumFITSError("spectrum FITS contains no finite LASP RV header")
     if rv_error is None or rv_error <= 0:
