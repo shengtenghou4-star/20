@@ -10,6 +10,7 @@ from hou_compact.gaia import (
     run_sync_query,
     success_manifest_path,
 )
+from hou_compact.http_timeout import MinimumTimeoutSession
 
 
 class _DummyResult:
@@ -143,8 +144,10 @@ def test_async_query_records_job_provenance_and_result(
     job = _SuccessfulAsyncJob(table)
 
     class DummyAsyncService:
-        def __init__(self, url: str) -> None:
+        def __init__(self, url: str, *, session: MinimumTimeoutSession) -> None:
             self.url = url
+            assert isinstance(session, MinimumTimeoutSession)
+            assert session.minimum_timeout_seconds == 90.0
 
         def submit_job(self, text: str, *, maxrec: int | None):
             assert "source_id" in text
@@ -166,6 +169,7 @@ def test_async_query_records_job_provenance_and_result(
     assert manifest["job_id"] == "123"
     assert manifest["terminal_phase"] == "COMPLETED"
     assert manifest["row_count"] == 2
+    assert manifest["minimum_http_timeout_seconds"] == 90.0
     assert job.execution_duration == 1800.0
     assert job.deleted is True
     assert success_manifest_path(output).exists()
@@ -182,8 +186,10 @@ def test_async_failure_records_remote_phase_and_deletes_job(
     job = _FailedAsyncJob(Table({"source_id": []}))
 
     class FailingAsyncService:
-        def __init__(self, url: str) -> None:
+        def __init__(self, url: str, *, session: MinimumTimeoutSession) -> None:
             self.url = url
+            assert isinstance(session, MinimumTimeoutSession)
+            assert session.minimum_timeout_seconds == 90.0
 
         def submit_job(self, text: str, *, maxrec: int | None):
             assert maxrec == 500
@@ -205,6 +211,7 @@ def test_async_failure_records_remote_phase_and_deletes_job(
     assert failure["terminal_phase"] == "ERROR"
     assert failure["job_url"].endswith("/123")
     assert failure["error_type"] == "RuntimeError"
+    assert failure["minimum_http_timeout_seconds"] == 90.0
     assert job.deleted is True
 
 
@@ -218,3 +225,5 @@ def test_async_query_validates_limits_before_network(tmp_path: Path) -> None:
         run_async_query(query, output, wait_timeout_seconds=0.0)
     with pytest.raises(ValueError, match="fetch_retries"):
         run_async_query(query, output, fetch_retries=-1)
+    with pytest.raises(ValueError, match="minimum_http_timeout_seconds"):
+        run_async_query(query, output, minimum_http_timeout_seconds=0.0)
