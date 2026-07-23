@@ -1,21 +1,13 @@
 name: dark668-catalog-contract
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/dark668.py"
-      - "scripts/acquire_dark668_catalogues.py"
-      - "scripts/rank_dark668_targets.py"
-      - "tests/test_dark668.py"
-      - "docs/DARK668_PROTOCOL_v0.1.md"
-      - ".github/workflows/dark668-catalog-contract.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-contract-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-contract-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
