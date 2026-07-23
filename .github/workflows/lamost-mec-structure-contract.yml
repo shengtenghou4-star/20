@@ -48,7 +48,11 @@ jobs:
           delimiter = max(delimiter_counts, key=delimiter_counts.get)
           if delimiter_counts[delimiter] < 2:
               raise RuntimeError(f'ambiguous MEC delimiter counts: {delimiter_counts}')
-          reader = csv.DictReader(io.StringIO(header + ''.join(text.readline() for _ in range(500))), delimiter=delimiter, strict=True)
+          reader = csv.DictReader(
+              io.StringIO(header + ''.join(text.readline() for _ in range(500))),
+              delimiter=delimiter,
+              strict=True,
+          )
           headers = [str(x).strip().lower().lstrip('\ufeff') for x in (reader.fieldnames or [])]
           required = {'obs_number', 'obsid_list', 'midmjm_list'}
           if not required.issubset(headers):
@@ -56,9 +60,11 @@ jobs:
 
           exact_int = re.compile(r'^[0-9]+$')
           decimal_int = re.compile(r'^[0-9]+(?:\.0+)?$')
+          numeric_decimal = re.compile(r'^[0-9]+(?:\.[0-9]+)?$')
           separators = ('-', ',', ';', ' ', '|', '_', ':', '/')
           stats = Counter()
           signature_counts = Counter()
+          decimal_places = Counter()
           rows = 0
 
           def classify_list(value: str, expected: int, prefix: str) -> None:
@@ -67,7 +73,7 @@ jobs:
               stats[f'{prefix}_has_brackets'] += int(any(ch in token for ch in '[](){}'))
               stats[f'{prefix}_has_quotes'] += int(('"' in token) or ("'" in token))
               stats[f'{prefix}_has_decimal_point'] += int('.' in token)
-              stats[f'{prefix}_has_exponent'] += int(('e' in token.lower()))
+              stats[f'{prefix}_has_exponent'] += int('e' in token.lower())
               for sep in separators:
                   parts = token.split(sep) if token else []
                   label = {
@@ -76,13 +82,26 @@ jobs:
                   }[sep]
                   stats[f'{prefix}_{label}_present'] += int(sep in token)
                   stats[f'{prefix}_{label}_count_matches'] += int(bool(parts) and len(parts) == expected)
-                  stats[f'{prefix}_{label}_all_exact_int'] += int(bool(parts) and all(exact_int.fullmatch(p or '') for p in parts))
-                  stats[f'{prefix}_{label}_all_decimal_int'] += int(bool(parts) and all(decimal_int.fullmatch(p or '') for p in parts))
+                  stats[f'{prefix}_{label}_all_exact_int'] += int(
+                      bool(parts) and all(exact_int.fullmatch(p or '') for p in parts)
+                  )
+                  stats[f'{prefix}_{label}_all_decimal_int'] += int(
+                      bool(parts) and all(decimal_int.fullmatch(p or '') for p in parts)
+                  )
+                  stats[f'{prefix}_{label}_all_numeric_decimal'] += int(
+                      bool(parts) and all(numeric_decimal.fullmatch(p or '') for p in parts)
+                  )
                   stats[f'{prefix}_{label}_valid_exact'] += int(
-                      bool(parts) and len(parts) == expected and all(exact_int.fullmatch(p or '') for p in parts)
+                      bool(parts) and len(parts) == expected
+                      and all(exact_int.fullmatch(p or '') for p in parts)
                   )
                   stats[f'{prefix}_{label}_valid_decimal_int'] += int(
-                      bool(parts) and len(parts) == expected and all(decimal_int.fullmatch(p or '') for p in parts)
+                      bool(parts) and len(parts) == expected
+                      and all(decimal_int.fullmatch(p or '') for p in parts)
+                  )
+                  stats[f'{prefix}_{label}_valid_numeric_decimal'] += int(
+                      bool(parts) and len(parts) == expected
+                      and all(numeric_decimal.fullmatch(p or '') for p in parts)
                   )
               signature = (
                   len(token),
@@ -101,13 +120,30 @@ jobs:
               raw_count = str(row.get('obs_number', '')).strip()
               stats['obs_number_exact_int'] += int(bool(exact_int.fullmatch(raw_count)))
               stats['obs_number_decimal_int'] += int(bool(decimal_int.fullmatch(raw_count)))
-              if decimal_int.fullmatch(raw_count):
-                  expected = int(float(raw_count))
-              else:
-                  expected = -1
+              expected = int(raw_count) if exact_int.fullmatch(raw_count) else -1
               stats['obs_number_at_least_2'] += int(expected >= 2)
-              classify_list(str(row.get('obsid_list', '')), expected, 'obsid')
-              classify_list(str(row.get('midmjm_list', '')), expected, 'midmjm')
+
+              obsid_raw = str(row.get('obsid_list', ''))
+              midmjm_raw = str(row.get('midmjm_list', ''))
+              classify_list(obsid_raw, expected, 'obsid')
+              classify_list(midmjm_raw, expected, 'midmjm')
+
+              parts = midmjm_raw.strip().split(',') if midmjm_raw.strip() else []
+              if expected >= 0 and len(parts) == expected:
+                  for part in parts:
+                      if not numeric_decimal.fullmatch(part):
+                          stats['midmjm_comma_non_numeric_tokens'] += 1
+                          continue
+                      stats['midmjm_comma_numeric_tokens'] += 1
+                      fraction = part.partition('.')[2]
+                      places = len(fraction)
+                      decimal_places[str(places)] += 1
+                      stats['midmjm_nonzero_fractional_tokens'] += int(
+                          bool(fraction) and any(ch != '0' for ch in fraction)
+                      )
+                      stats['midmjm_zero_fractional_tokens'] += int(
+                          bool(fraction) and all(ch == '0' for ch in fraction)
+                      )
 
           safe_signatures = []
           for (prefix, signature), count in signature_counts.most_common(20):
@@ -124,7 +160,7 @@ jobs:
               })
 
           result = {
-              'schema_version': '0.1',
+              'schema_version': '0.2',
               'candidate_safe': True,
               'source': 'official LAMOST DR8 v1.0 LRS multi-epoch catalogue',
               'sample_rows': rows,
@@ -132,6 +168,7 @@ jobs:
               'delimiter_counts_in_header': delimiter_counts,
               'columns': headers,
               'aggregate_structure_counts': dict(sorted(stats.items())),
+              'midmjm_decimal_places_per_token': dict(sorted(decimal_places.items(), key=lambda item: int(item[0]))),
               'common_value_shapes_without_values': safe_signatures,
               'privacy_contract': 'No row value, source identifier, obsid, coordinate, RV, or candidate membership is retained.',
           }
