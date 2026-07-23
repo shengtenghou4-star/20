@@ -1,7 +1,7 @@
 """GALAH DR4 per-spectrum discovery and exact-identity normalization.
 
 The official GALAH DR4 ``allspec`` catalogue contains one row per spectrum,
-Gaia DR3 identity, MJD, primary-component RV and quoted RV uncertainty.  This
+Gaia DR3 identity, MJD, primary-component RV and quoted RV uncertainty. This
 module discovers the public Data Central table through TAP metadata and freezes
 the minimal schema needed for Dark-668 follow-up.
 """
@@ -54,13 +54,16 @@ def discover_allspec_table(tables: pd.DataFrame) -> str:
 
     table_column = _column(tables, "table_name")
     names = [str(value).strip() for value in tables[table_column].dropna()]
-    candidates = [
-        name
-        for name in names
-        if "galah" in name.lower()
-        and "dr4" in name.lower()
-        and ("allspec" in name.lower() or "main_spec" in name.lower())
-    ]
+    candidates = []
+    for name in names:
+        lowered = name.lower()
+        is_dr4 = "galah" in lowered and "dr4" in lowered
+        is_per_spectrum = any(
+            token in lowered
+            for token in ("allspec", "main_spec", "mainspec", "mainspectable")
+        )
+        if is_dr4 and is_per_spectrum:
+            candidates.append(name)
     unique = sorted(set(candidates))
     if len(unique) != 1:
         raise GalahDR4Error(
@@ -193,6 +196,27 @@ def standardize_exact_rows(
         & snr.gt(30)
     )
 
+    snr_ccd1 = (
+        pd.to_numeric(selected[mapping["snr_px_ccd1"]], errors="coerce")
+        if "snr_px_ccd1" in mapping
+        else pd.Series(np.nan, index=selected.index, dtype="float64")
+    )
+    snr_ccd4 = (
+        pd.to_numeric(selected[mapping["snr_px_ccd4"]], errors="coerce")
+        if "snr_px_ccd4" in mapping
+        else pd.Series(np.nan, index=selected.index, dtype="float64")
+    )
+    program = (
+        selected[mapping["survey_name"]].astype("string")
+        if "survey_name" in mapping
+        else pd.Series("GALAH", index=selected.index, dtype="string")
+    )
+    subclass = (
+        selected[mapping["setup"]].astype("string")
+        if "setup" in mapping
+        else pd.Series(pd.NA, index=selected.index, dtype="string")
+    )
+
     output = pd.DataFrame(
         {
             "source_id": selected["_source_id"].astype("int64"),
@@ -204,22 +228,14 @@ def standardize_exact_rows(
             "success": success.astype(bool),
             "rvs_warn": np.where(success, 0, 1).astype("int64"),
             "fiberstatus": flag_red.fillna(1).astype("int64"),
-            "sn_b": pd.to_numeric(
-                selected.get(mapping.get("snr_px_ccd1", "")), errors="coerce"
-            ),
+            "sn_b": snr_ccd1,
             "sn_r": snr,
-            "sn_z": pd.to_numeric(
-                selected.get(mapping.get("snr_px_ccd4", "")), errors="coerce"
-            ),
+            "sn_z": snr_ccd4,
             "survey": "galah_dr4_allspec",
-            "program": selected.get(
-                mapping.get("survey_name", ""), pd.Series("GALAH", index=selected.index)
-            ).astype("string"),
+            "program": program,
             "source_match_mode": "exact_gaia_dr3_integer_tap_constraint",
             "class": "STAR",
-            "subclass": selected.get(
-                mapping.get("setup", ""), pd.Series(pd.NA, index=selected.index)
-            ).astype("string"),
+            "subclass": subclass,
         }
     )
     return output.loc[:, output_columns].sort_values(
