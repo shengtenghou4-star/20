@@ -2,8 +2,8 @@
 """Validate the anonymous LAMOST DR8 v2.0 ConeSearch RV contract.
 
 The official example cone is used only to inspect the returned column contract in
-memory.  No coordinates, source identifiers, radial velocities, or row values are
-persisted.  Position is accepted only as row discovery; downstream identity still
+memory. No coordinates, source identifiers, radial velocities, or row values are
+persisted. Position is accepted only as row discovery; downstream identity still
 requires exact returned Gaia DR3 character equality.
 """
 
@@ -60,13 +60,13 @@ def main() -> None:
     args = parse_args()
     spec = DR3SpectrumSpec()
     payload: dict[str, object] = {
-        "schema_version": "0.8",
+        "schema_version": "0.9",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
         "conesearch_endpoint": args.conesearch_endpoint,
-        "transport": "bounded_anonymous_ivao_conesearch",
+        "transport": "bounded_anonymous_ivoa_conesearch",
         "diagnostic_scope": "official_example_cone_values_discarded",
         "frozen_table_contract": spec.to_record(),
         "claim_boundary": _CLAIM_BOUNDARY,
@@ -92,6 +92,15 @@ def main() -> None:
         returned = {str(column).lower() for column in frame.columns}
         required = {column.lower() for column in spec.selected_columns}
         missing = sorted(required - returned)
+        payload.update(
+            {
+                "probe_row_count": int(len(frame)),
+                "returned_columns": sorted(returned),
+                "missing_required_columns": missing,
+                "source_row_values_persisted": False,
+                "conesearch_receipt": receipt.to_record(),
+            }
+        )
         if missing:
             raise RuntimeError(f"ConeSearch contract missing columns: {missing}")
         if frame.empty:
@@ -111,12 +120,8 @@ def main() -> None:
         payload.update(
             {
                 "status": "pass",
-                "probe_row_count": int(len(frame)),
-                "returned_columns": sorted(returned),
                 "required_columns_present": True,
                 "exact_gaia_dr3_character_rows_ge_1": True,
-                "source_row_values_persisted": False,
-                "conesearch_receipt": receipt.to_record(),
             }
         )
         _write(args.output, payload)
