@@ -1,0 +1,5 @@
+Dark-668 exact Gaia DR3 ID full-stack trigger v0.2.
+
+This retry separates catalogue acquisition from seed construction, adds three
+bounded catalogue-download attempts, records stage-specific candidate-safe
+outcomes, and preserves the same encryption and claim boundaries.
