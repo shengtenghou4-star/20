@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Validate the LAMOST TAP schema required by the Dark-668 live route.
+"""Validate the LAMOST SQL schema required by the Dark-668 live route.
 
-Only TAP_SCHEMA metadata is queried. The probe validates both the per-spectrum
-``obsid + rv + rv_err`` contract and an identity-safe multiple-epoch table whose Gaia
-identifier is stored as integer or text. It never requests catalogue source rows.
+Only public ``information_schema.columns`` metadata is queried through the
+release-scoped OpenAPI SQL endpoint. The probe validates both the per-spectrum
+``obsid + rv + rv_err`` contract and an identity-safe multiple-epoch table whose
+Gaia identifier is stored as integer or text. It never requests catalogue rows.
 """
 
 from __future__ import annotations
@@ -13,13 +14,13 @@ import json
 from pathlib import Path
 
 from hou_compact.lamost_openapi import discover_openapi_contract
-from hou_compact.lamost_tap_get import TapGetService
+from hou_compact.lamost_openapi_sql import OpenAPISQLService
 from hou_compact.lamost_tap_mec import discover_mec_table_specs
 from hou_compact.lamost_tap_rv import discover_rv_table_specs
 
 _CLAIM_BOUNDARY = (
-    "TAP_SCHEMA metadata only. No catalogue rows, source identifiers, coordinates, "
-    "spectra, radial velocities, or candidate classifications were requested."
+    "Public information-schema metadata only. No catalogue rows, source identifiers, "
+    "coordinates, spectra, radial velocities, or candidate classifications were requested."
 )
 
 
@@ -47,15 +48,15 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "0.4",
+        "schema_version": "0.5",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
-        "transport": "bounded_https_get",
+        "transport": "bounded_openapi_sql_get",
         "claim_boundary": _CLAIM_BOUNDARY,
     }
-    service: TapGetService | None = None
+    service: OpenAPISQLService | None = None
     try:
         contract = discover_openapi_contract(
             openapi_root=args.openapi_root,
@@ -63,16 +64,17 @@ def main() -> None:
             sub_version=args.sub_version,
             timeout=args.timeout,
         )
-        tap_urls = [str(value) for value in contract.get("tap_urls", [])]
         payload["openapi_status"] = contract.get("status")
         payload["openapi_receipts"] = contract.get("receipts", {})
-        payload["tap_urls"] = tap_urls
-        if not tap_urls:
-            raise RuntimeError("LAMOST OpenAPI returned no TAP URL")
+        payload["openapi_tables_status"] = contract.get("openapi_tables_status")
 
-        tap_url = tap_urls[0]
-        payload["tap_url"] = tap_url
-        service = TapGetService(tap_url, timeout=args.timeout)
+        service = OpenAPISQLService(
+            args.openapi_root,
+            dr_version=args.dr_version,
+            sub_version=args.sub_version,
+            timeout=args.timeout,
+        )
+        payload["sql_endpoint"] = service.endpoint
         contract_errors: dict[str, dict[str, str]] = {}
 
         try:
@@ -95,20 +97,18 @@ def main() -> None:
                 "error": str(error)[:2_000],
             }
 
-        payload["transport_receipts"] = [
-            receipt.to_record() for receipt in service.receipts
-        ]
+        payload["sql_receipts"] = [receipt.to_record() for receipt in service.receipts]
         payload["contract_errors"] = contract_errors
         if contract_errors:
             payload["status"] = "contract_failure"
             _write(args.output, payload)
             failed = ", ".join(sorted(contract_errors))
-            raise RuntimeError(f"LAMOST TAP schema contract failed: {failed}")
+            raise RuntimeError(f"LAMOST OpenAPI SQL schema contract failed: {failed}")
         payload["status"] = "pass"
         _write(args.output, payload)
     except Exception as error:
         if service is not None:
-            payload["transport_receipts"] = [
+            payload["sql_receipts"] = [
                 receipt.to_record() for receipt in service.receipts
             ]
         if payload.get("status") != "contract_failure":
