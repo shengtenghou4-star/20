@@ -1,19 +1,13 @@
 name: dark668-lamost-gaia-id-form-contract
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/lamost_gaia_id_form.py"
-      - "scripts/probe_lamost_gaia_id_form.py"
-      - "tests/test_lamost_gaia_id_form.py"
-      - ".github/workflows/dark668-gaia-id-form-contract.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-gaia-id-form-contract-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-gaia-id-form-contract-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
