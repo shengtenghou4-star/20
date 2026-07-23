@@ -3,8 +3,8 @@
 
 One arbitrary public position is discovered through ConeSearch. The browser form
 is then submitted in a same-origin cookie session using the exact live defaults.
-All row values stay in memory; only column names, aggregate counts and response
-hashes are persisted.
+All row values stay in memory; only column names, aggregate counts, hashes and
+fully redacted short protocol diagnostics are persisted.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ import hashlib
 from http.cookiejar import CookieJar
 from io import BytesIO
 import json
+import math
 from pathlib import Path
 import re
 from urllib.parse import urljoin, urlparse
@@ -213,10 +214,50 @@ def _csv_contract(body: bytes) -> dict[str, object]:
     return payload
 
 
+def _sanitized_text(body: bytes) -> str | None:
+    if len(body) > 4096:
+        return None
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return None
+    if not text:
+        return ""
+    printable = sum(character.isprintable() or character.isspace() for character in text)
+    if printable / len(text) < 0.9:
+        return None
+    text = " ".join(text.split())
+    text = re.sub(r"https?://\S+", "[url-redacted]", text)
+    text = re.sub(r"[A-Za-z0-9_-]{24,}", "[token-redacted]", text)
+    text = re.sub(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", "[number-redacted]", text)
+    return text[:1000]
+
+
+def _non_csv_contract(body: bytes, final_url: str) -> dict[str, object]:
+    printable = 0.0
+    if body:
+        printable = sum(32 <= value <= 126 or value in {9, 10, 13} for value in body) / len(body)
+    payload: dict[str, object] = {
+        "magic_hex": body[:24].hex(),
+        "printable_fraction": round(printable, 6),
+        "final_path": urlparse(final_url).path or "/",
+    }
+    sanitized = _sanitized_text(body)
+    if sanitized is not None:
+        payload["sanitized_text"] = sanitized
+    if body[:2] == b"\x1f\x8b":
+        payload["binary_signature"] = "gzip"
+    elif body[:4] == b"PK\x03\x04":
+        payload["binary_signature"] = "zip"
+    elif body[:6] == b"SIMPLE":
+        payload["binary_signature"] = "fits"
+    return payload
+
+
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "status": "failure",
         "transport": "same_origin_cookie_multipart_form",
@@ -236,7 +277,7 @@ def main() -> None:
         ),
     }
     try:
-        cone, cone_receipt = query_lamost_cone(
+        cone, _ = query_lamost_cone(
             args.conesearch_endpoint,
             ra_deg=10.0004738,
             dec_deg=40.9952444,
@@ -277,6 +318,7 @@ def main() -> None:
                 "headers": sorted(set(parser.headers))[:200],
                 "same_origin_paths": sorted(parser.paths)[:200],
             }
+            payload["non_csv_contract"] = _non_csv_contract(body, final_url)
             raise RuntimeError(
                 f"anonymous form returned {receipt.response_kind} instead of CSV"
             )
