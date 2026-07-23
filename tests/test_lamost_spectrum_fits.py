@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gzip
 from io import BytesIO
 
 from astropy.io import fits
@@ -67,9 +68,52 @@ def test_download_validates_fits_and_redacts_obsid_from_receipt() -> None:
     assert record["endpoint"].endswith("/dr8/v2.0/lrs/spectrum/fits")
     assert "403143" not in str(record)
     assert record["response_kind"] == "fits"
+    assert record["decoded_bytes"] == len(body)
     assert record["hdu_count"] == 2
     assert "RV" in record["header_keys"]
     assert "RV_ERR" in record["header_keys"]
+
+
+def test_download_decodes_bounded_gzip_fits() -> None:
+    decoded = _fits_bytes(rv=44.0, rv_err=0.7)
+    encoded = gzip.compress(decoded)
+
+    def opener(request: object, *, timeout: float) -> _Response:
+        del request, timeout
+        return _Response(encoded, "application/fits")
+
+    body, receipt = download_lamost_spectrum_fits(
+        "https://example.test/openapi",
+        dr_version="dr8",
+        sub_version="v2.0",
+        obsid=403143,
+        retries=0,
+        opener=opener,
+    )
+    assert body == decoded
+    assert receipt.response_kind == "gzip_fits"
+    assert receipt.response_bytes == len(encoded)
+    assert receipt.decoded_bytes == len(decoded)
+    assert extract_lasp_rv_from_fits(body) == {"rv": 44.0, "rv_err": 0.7}
+
+
+def test_download_rejects_gzip_expansion_over_limit() -> None:
+    encoded = gzip.compress(_fits_bytes())
+
+    def opener(request: object, *, timeout: float) -> _Response:
+        del request, timeout
+        return _Response(encoded)
+
+    with pytest.raises(LamostSpectrumFITSError, match="decoded spectrum FITS exceeded"):
+        download_lamost_spectrum_fits(
+            "https://example.test/openapi",
+            dr_version="dr8",
+            sub_version="v2.0",
+            obsid=403143,
+            retries=0,
+            maximum_decoded_bytes=2880,
+            opener=opener,
+        )
 
 
 def test_extract_lasp_rv_reads_extension_header() -> None:
