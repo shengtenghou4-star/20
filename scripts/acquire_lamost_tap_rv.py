@@ -11,8 +11,7 @@ from typing import Any
 import pandas as pd
 
 from hou_compact.gaia import sha256_file
-from hou_compact.lamost_openapi import discover_openapi_contract
-from hou_compact.lamost_tap_get import TapGetService
+from hou_compact.lamost_openapi_sql import OpenAPISQLService
 from hou_compact.lamost_tap_rv import (
     candidate_safe_tap_summary,
     discover_rv_table_specs,
@@ -91,7 +90,7 @@ def main() -> None:
     if not obsids:
         rows = pd.DataFrame(columns=_EMPTY_COLUMNS)
         payload = {
-            "schema_version": "0.3",
+            "schema_version": "0.4",
             "candidate_safe": True,
             "epoch_input_sha256": sha256_file(args.epochs),
             "release": f"{args.dr_version}/{args.sub_version}",
@@ -100,29 +99,24 @@ def main() -> None:
             "maxrec_per_batch": args.maxrec_per_batch,
             "summary": candidate_safe_tap_summary(0, rows, [], []),
             "query_receipts": [],
-            "transport_receipts": [],
+            "sql_receipts": [],
             "source_level_output_written": True,
             "source_level_output_path": str(args.output),
-            "public_commit_policy": "Never commit or upload source-level TAP rows.",
+            "public_commit_policy": "Never commit or upload source-level SQL rows.",
             "zero_overlap_policy": (
                 "No LAMOST spectrum IDs were supplied, so zero RV rows is a valid "
-                "scientific result and no external TAP request was made."
+                "scientific result and no external SQL request was made."
             ),
         }
         _write_outputs(args, rows, payload)
         return
 
-    contract = discover_openapi_contract(
-        openapi_root=args.openapi_root,
+    service = OpenAPISQLService(
+        args.openapi_root,
         dr_version=args.dr_version,
         sub_version=args.sub_version,
         timeout=args.timeout,
     )
-    tap_urls = [str(value) for value in contract.get("tap_urls", [])]
-    if not tap_urls:
-        raise RuntimeError("LAMOST OpenAPI returned no TAP URL")
-    tap_url = tap_urls[0]
-    service = TapGetService(tap_url, timeout=args.timeout)
     specs = discover_rv_table_specs(service)
     rows, receipts = query_exact_obsids(
         service,
@@ -132,20 +126,20 @@ def main() -> None:
         maxrec_per_batch=args.maxrec_per_batch,
     )
     payload = {
-        "schema_version": "0.3",
+        "schema_version": "0.4",
         "candidate_safe": True,
         "epoch_input_sha256": sha256_file(args.epochs),
         "release": f"{args.dr_version}/{args.sub_version}",
-        "tap_url": tap_url,
-        "transport": "bounded_https_get",
+        "sql_endpoint": service.endpoint,
+        "transport": "bounded_openapi_sql_get",
         "batch_size": args.batch_size,
         "maxrec_per_batch": args.maxrec_per_batch,
         "summary": candidate_safe_tap_summary(len(obsids), rows, specs, receipts),
         "query_receipts": [receipt.to_record() for receipt in receipts],
-        "transport_receipts": [receipt.to_record() for receipt in service.receipts],
+        "sql_receipts": [receipt.to_record() for receipt in service.receipts],
         "source_level_output_written": True,
         "source_level_output_path": str(args.output),
-        "public_commit_policy": "Never commit or upload source-level TAP rows.",
+        "public_commit_policy": "Never commit or upload source-level SQL rows.",
     }
     _write_outputs(args, rows, payload)
 
