@@ -1,0 +1,456 @@
+name: HOU-COMPACT public encrypted final hybrid capsule
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/hou-compact-final-hybrid-capsule.yml'
+      - 'capsules/hou_compact_final/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: hou-compact-final-hybrid-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  encrypted-final-hybrid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 420
+    env:
+      CAPSULE: capsules/hou_compact_final
+      PYTHONPATH: capsules/hou_compact_final/hou_compact:src
+    steps:
+      - name: Checkout public audited repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Create ephemeral private working directories
+        run: mkdir -p relay_work/logs relay_work/fits encrypted_output
+
+      - name: Install audited public pipeline
+        id: install
+        continue-on-error: true
+        run: python -m pip install -e '.[dev,reference]' > relay_work/logs/install.log 2>&1
+
+      - name: Run final capsule scientific smoke tests
+        id: smoke
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test '${{ steps.install.outcome }}' = 'success'
+          python -m py_compile \
+            "$CAPSULE"/hou_compact/*.py \
+            "$CAPSULE"/tests/test_final_capsule.py \
+            > relay_work/logs/compile.log 2>&1
+          python -m unittest discover \
+            -s "$CAPSULE"/tests -p 'test_final_capsule.py' -v \
+            > relay_work/logs/smoke.log 2>&1
+
+      - name: Rebuild frozen Gaia v9 cohort
+        id: gaia
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          set -uo pipefail
+          test '${{ steps.smoke.outcome }}' = 'success'
+          ok=0
+          for attempt in 1 2 3; do
+            rm -f relay_work/gaia_seed.ecsv relay_work/gaia_seed.ecsv.manifest.json
+            if python scripts/run_gaia_query.py \
+              --query queries/gaia_sb1_contamination_pilot_v9.adql \
+              --output relay_work/gaia_seed.ecsv \
+              --overwrite \
+              > "relay_work/logs/gaia_attempt_${attempt}.log" 2>&1 && \
+              test -s relay_work/gaia_seed.ecsv; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 10))
+          done
+          test "$ok" = 1
+
+      - name: Build exact Gaia DR3 to DR2 bridge
+        id: bridge
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 75
+        run: |
+          set -uo pipefail
+          test '${{ steps.gaia.outcome }}' = 'success'
+          ok=0
+          for attempt in 1 2; do
+            rm -f relay_work/gaia_dr2_bridge.csv \
+              relay_work/gaia_dr2_bridge.csv.manifest.json \
+              relay_work/gaia_dr2_bridge.neighbourhood.csv
+            if python scripts/query_gaia_dr2_bridge.py \
+              relay_work/gaia_seed.ecsv \
+              --output relay_work/gaia_dr2_bridge.csv \
+              --neighbourhood-output relay_work/gaia_dr2_bridge.neighbourhood.csv \
+              --batch-size 250 \
+              --maxrec-per-batch 5000 \
+              --maximum-nearest-distance-mas 1000 \
+              --minimum-distance-margin-mas 5 \
+              --overwrite \
+              > "relay_work/logs/bridge_attempt_${attempt}.log" 2>&1 && \
+              test -s relay_work/gaia_dr2_bridge.csv; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 15))
+          done
+          test "$ok" = 1
+
+      - name: Query all LAMOST spectra for exact accepted Gaia DR2 IDs
+        id: form
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          test '${{ steps.bridge.outcome }}' = 'success'
+          python scripts/acquire_lamost_gaia_form_rv.py \
+            relay_work/gaia_dr2_bridge.csv \
+            --rows-output relay_work/lamost_gaia_form_rows.csv \
+            --overlap-output relay_work/lamost_gaia_form_overlap.csv \
+            --private-manifest relay_work/lamost_gaia_form_private_manifest.json \
+            --safe-summary relay_work/lamost_gaia_form_safe_summary.json \
+            --batch-size 100 \
+            --batches-per-session 5 \
+            --collection minimal \
+            --timeout 180 \
+            --maximum-response-mb 32 \
+            --retries 3 \
+            > relay_work/logs/form.log 2>&1
+
+      - name: Exact join and compute conservative RV variability
+        id: analyze
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test '${{ steps.form.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/lamost_form_exact_rv.py \
+            relay_work/lamost_gaia_form_overlap.csv \
+            relay_work/lamost_gaia_form_rows.csv \
+            --exact-output relay_work/lamost_gaia_form_exact_rv.csv \
+            --source-output relay_work/lamost_gaia_form_source_metrics.csv \
+            --summary-output relay_work/lamost_gaia_form_analysis_summary.json \
+            --systematic-floor-kms 5 \
+            > relay_work/logs/analyze.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/lamost_gaia_form_analysis_summary.json'))
+          assert data['expected_obsid_count']==753
+          assert data['matched_source_count']==497
+          assert data['sources_with_valid_rv']==224
+          assert data['sources_joint_same_pair_delta20_sigma5_floor']==5
+          PY
+
+      - name: Freeze five conservative candidates
+        id: prepare
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test '${{ steps.analyze.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/phase_followup_pipeline.py prepare \
+            --gaia-ecsv relay_work/gaia_seed.ecsv \
+            --exact-rv relay_work/lamost_gaia_form_exact_rv.csv \
+            --source-metrics relay_work/lamost_gaia_form_source_metrics.csv \
+            --overlap relay_work/lamost_gaia_form_overlap.csv \
+            --candidate-gaia relay_work/candidate_gaia_orbits.csv \
+            --candidate-rv relay_work/candidate_exact_rv.csv \
+            --candidate-overlap relay_work/candidate_exact_overlap.csv \
+            --summary relay_work/candidate_prepare_summary.json \
+            > relay_work/logs/prepare.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/candidate_prepare_summary.json'))
+          assert data['conservative_candidate_count']==5
+          assert data['candidate_exact_obsids']==12
+          PY
+
+      - name: Download and verify official LAMOST MEC catalogue
+        id: mec_download
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          test '${{ steps.prepare.outcome }}' = 'success'
+          url='https://www.lamost.org/dr8/v1.0/catdl?name=dr8_v1.0_LRS_mec.csv.gz'
+          ok=0
+          for attempt in 1 2 3 4; do
+            rm -f relay_work/lamost_lrs_mec.csv.gz
+            if curl --fail --location --retry 3 --retry-all-errors \
+              --connect-timeout 30 --max-time 1800 \
+              --output relay_work/lamost_lrs_mec.csv.gz "$url" \
+              > "relay_work/logs/mec_download_${attempt}.log" 2>&1 && \
+              gzip -t relay_work/lamost_lrs_mec.csv.gz; then
+              ok=1
+              break
+            fi
+            sleep $((attempt * 10))
+          done
+          test "$ok" = 1
+          sha256sum relay_work/lamost_lrs_mec.csv.gz \
+            > relay_work/lamost_lrs_mec.csv.gz.sha256
+
+      - name: Extract UTC corrected exact MEC times
+        id: mec_times
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          test '${{ steps.mec_download.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/lamost_mec_utc_time.py \
+            relay_work/candidate_exact_overlap.csv \
+            relay_work/lamost_lrs_mec.csv.gz \
+            --output relay_work/candidate_mec_utc_times.csv \
+            --receipt relay_work/candidate_mec_time_receipt.json \
+            > relay_work/logs/mec_times.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/candidate_mec_time_receipt.json'))
+          assert data['status']=='success'
+          assert data['scan']['catalogue_rows']==2012297
+          assert data['scan']['matched_obsids']==9
+          assert data['scan']['matched_sources']==4
+          assert data['scan']['expected_obsids_without_multi_epoch_time']==3
+          PY
+          rm -f relay_work/lamost_lrs_mec.csv.gz
+
+      - name: Download all twelve exact first party FITS spectra
+        id: fits
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          test '${{ steps.prepare.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/lamost_candidate_fits.py \
+            relay_work/candidate_exact_overlap.csv \
+            --output-dir relay_work/fits \
+            --manifest relay_work/candidate_fits_manifest.csv \
+            --private-receipt relay_work/candidate_fits_private_receipt.json \
+            --safe-summary relay_work/candidate_fits_safe_summary.json \
+            --timeout 180 \
+            --retries 3 \
+            > relay_work/logs/fits.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/candidate_fits_safe_summary.json'))
+          assert data['expected_obsids']==12
+          assert data['downloaded_obsids']==12
+          assert data['exact_header_obsid_matches']==12
+          assert data['full_date_obs_headers']==12
+          PY
+
+      - name: Build 12 of 12 corrected hybrid UTC time bridge
+        id: hybrid
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test '${{ steps.mec_times.outcome }}' = 'success'
+          test '${{ steps.fits.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/lamost_hybrid_time.py \
+            relay_work/candidate_exact_overlap.csv \
+            relay_work/candidate_mec_utc_times.csv \
+            relay_work/candidate_fits_manifest.csv \
+            --output relay_work/candidate_hybrid_times.csv \
+            --private-receipt relay_work/candidate_hybrid_private_receipt.json \
+            --safe-summary relay_work/candidate_hybrid_safe_summary.json \
+            > relay_work/logs/hybrid.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/candidate_hybrid_safe_summary.json'))
+          assert data['mec_obsids']==9
+          assert data['fits_obsids']==12
+          assert data['mec_fits_crosschecks']==9
+          assert data['mec_fits_crosscheck_mismatches']==0
+          assert data['mec_missing_obsids_filled_by_fits']==3
+          assert data['final_obsids']==12
+          assert data['final_sources']==5
+          PY
+
+      - name: Validate Gaia orbital phase and nominal minimum companion mass
+        id: phase
+        if: always()
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          test '${{ steps.hybrid.outcome }}' = 'success'
+          python "$CAPSULE"/hou_compact/phase_followup_pipeline.py validate \
+            --gaia relay_work/candidate_gaia_orbits.csv \
+            --rv relay_work/candidate_exact_rv.csv \
+            --times relay_work/candidate_hybrid_times.csv \
+            --source-output relay_work/candidate_phase_mass_rows.csv \
+            --summary-output relay_work/candidate_phase_mass_summary.json \
+            > relay_work/logs/phase.log 2>&1
+          python - <<'PY'
+          import json
+          data=json.load(open('relay_work/candidate_phase_mass_summary.json'))
+          assert data['candidate_orbit_count']==5
+          assert data['candidate_sources_with_exact_time_rv']==5
+          PY
+
+      - name: Build candidate safe aggregate receipt
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          GAIA_OUTCOME: ${{ steps.gaia.outcome }}
+          BRIDGE_OUTCOME: ${{ steps.bridge.outcome }}
+          FORM_OUTCOME: ${{ steps.form.outcome }}
+          ANALYZE_OUTCOME: ${{ steps.analyze.outcome }}
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          MEC_DOWNLOAD_OUTCOME: ${{ steps.mec_download.outcome }}
+          MEC_TIMES_OUTCOME: ${{ steps.mec_times.outcome }}
+          FITS_OUTCOME: ${{ steps.fits.outcome }}
+          HYBRID_OUTCOME: ${{ steps.hybrid.outcome }}
+          PHASE_OUTCOME: ${{ steps.phase.outcome }}
+        run: |
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          work=Path('relay_work')
+          def load(name):
+              path=work/name
+              if not path.exists() or path.stat().st_size==0:
+                  return None
+              try:
+                  return json.loads(path.read_text(encoding='utf-8'))
+              except Exception:
+                  return None
+          steps={
+              'install':os.environ.get('INSTALL_OUTCOME'),
+              'smoke':os.environ.get('SMOKE_OUTCOME'),
+              'gaia_v9':os.environ.get('GAIA_OUTCOME'),
+              'dr3_dr2_bridge':os.environ.get('BRIDGE_OUTCOME'),
+              'lamost_form':os.environ.get('FORM_OUTCOME'),
+              'rv_analysis':os.environ.get('ANALYZE_OUTCOME'),
+              'candidate_prepare':os.environ.get('PREPARE_OUTCOME'),
+              'mec_download':os.environ.get('MEC_DOWNLOAD_OUTCOME'),
+              'mec_utc_times':os.environ.get('MEC_TIMES_OUTCOME'),
+              'fits':os.environ.get('FITS_OUTCOME'),
+              'hybrid_time':os.environ.get('HYBRID_OUTCOME'),
+              'phase_mass':os.environ.get('PHASE_OUTCOME'),
+          }
+          receipt={
+              'schema_version':'1.0',
+              'candidate_safe':True,
+              'run_id':os.environ.get('GITHUB_RUN_ID'),
+              'repository_commit':os.environ.get('GITHUB_SHA'),
+              'steps':{key:{'status':value} for key,value in steps.items()},
+              'claim_boundary':(
+                  'Aggregate exact-RV, 12/12 hybrid UTC timing, Gaia phase and nominal '
+                  'minimum-mass triage only. No source identity, obsid, coordinate, RV, '
+                  'timestamp, orbit row or source classification is disclosed.'
+              ),
+          }
+          for key,name in [
+              ('form','lamost_gaia_form_safe_summary.json'),
+              ('rv','lamost_gaia_form_analysis_summary.json'),
+              ('candidates','candidate_prepare_summary.json'),
+              ('fits','candidate_fits_safe_summary.json'),
+              ('hybrid_time','candidate_hybrid_safe_summary.json'),
+              ('phase_mass','candidate_phase_mass_summary.json')]:
+              value=load(name)
+              if value is not None:
+                  receipt[key]=value
+          mec=load('candidate_mec_time_receipt.json')
+          if mec is not None:
+              receipt['mec_utc_time']={
+                  'status':mec.get('status'),
+                  'expected_obsids':mec.get('expected_obsids'),
+                  'scan':mec.get('scan'),
+                  'time_contract':mec.get('time_contract'),
+              }
+          Path('candidate_safe_final_hybrid_summary.json').write_text(
+              json.dumps(receipt,indent=2,sort_keys=True),encoding='utf-8')
+          PY
+
+      - name: Encrypt every source level output before upload
+        if: always()
+        run: |
+          set -euo pipefail
+          test -s candidate_safe_final_hybrid_summary.json || \
+            printf '%s\n' '{"candidate_safe":true,"status":"summary_missing"}' \
+              > candidate_safe_final_hybrid_summary.json
+          tar -C relay_work -czf /tmp/hou_compact_final_hybrid_sensitive.tar.gz .
+          openssl rand -hex 32 > /tmp/hou_compact_final_hybrid_passphrase.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -pass file:/tmp/hou_compact_final_hybrid_passphrase.txt \
+            -in /tmp/hou_compact_final_hybrid_sensitive.tar.gz \
+            -out encrypted_output/hou_compact_final_hybrid_sensitive.tar.gz.enc
+          openssl pkeyutl -encrypt -pubin \
+            -inkey "$CAPSULE"/keys/hou_compact_relay_public.pem \
+            -in /tmp/hou_compact_final_hybrid_passphrase.txt \
+            -out encrypted_output/hou_compact_final_hybrid_sensitive.key.enc \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+          cp candidate_safe_final_hybrid_summary.json encrypted_output/
+          sha256sum encrypted_output/* > encrypted_output/SHA256SUMS
+          shred -u \
+            /tmp/hou_compact_final_hybrid_passphrase.txt \
+            /tmp/hou_compact_final_hybrid_sensitive.tar.gz
+          rm -rf relay_work
+
+      - name: Upload encrypted final hybrid evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hou-compact-final-hybrid-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: encrypted_output/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Publish candidate safe aggregate receipt
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('fs');
+            let receipt={candidate_safe:true,status:'missing'};
+            try { receipt=JSON.parse(fs.readFileSync('candidate_safe_final_hybrid_summary.json','utf8')); }
+            catch(error) { receipt={candidate_safe:true,summary_error:String(error)}; }
+            const body=[
+              '### HOU-COMPACT public encrypted final hybrid receipt','',
+              `- Run ID: \`${context.runId}\``,'- Candidate-safe aggregate:','```json',
+              JSON.stringify(receipt,null,2).slice(0,55000),'```','',
+              'All source-level identities, RVs, times, FITS products and orbit diagnostics were encrypted before upload.'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner:context.repo.owner,repo:context.repo.repo,
+              issue_number:context.issue.number,body
+            });
+
+      - name: Preserve scientific failure after encrypted persistence
+        if: always()
+        run: |
+          test '${{ steps.install.outcome }}' = 'success'
+          test '${{ steps.smoke.outcome }}' = 'success'
+          test '${{ steps.gaia.outcome }}' = 'success'
+          test '${{ steps.bridge.outcome }}' = 'success'
+          test '${{ steps.form.outcome }}' = 'success'
+          test '${{ steps.analyze.outcome }}' = 'success'
+          test '${{ steps.prepare.outcome }}' = 'success'
+          test '${{ steps.mec_download.outcome }}' = 'success'
+          test '${{ steps.mec_times.outcome }}' = 'success'
+          test '${{ steps.fits.outcome }}' = 'success'
+          test '${{ steps.hybrid.outcome }}' = 'success'
+          test '${{ steps.phase.outcome }}' = 'success'
