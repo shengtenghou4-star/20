@@ -1,22 +1,13 @@
 name: dark668-lamost-overlap
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/dark668.py"
-      - "src/hou_compact/lamost.py"
-      - "scripts/acquire_dark668_catalogues.py"
-      - "scripts/prepare_dark668_seed.py"
-      - "scripts/query_gaia_dr2_bridge.py"
-      - "scripts/extract_lamost_dr8_overlap.py"
-      - ".github/workflows/dark668-lamost-overlap.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-overlap-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-overlap-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
