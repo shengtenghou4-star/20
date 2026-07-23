@@ -1,21 +1,13 @@
 name: dark668-galah-dr4-contract
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/datacentral_tap.py"
-      - "src/hou_compact/galah_dr4.py"
-      - "scripts/probe_galah_dr4_tap.py"
-      - "tests/test_datacentral_tap.py"
-      - "tests/test_galah_dr4.py"
-      - ".github/workflows/dark668-galah-dr4-contract.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-galah-dr4-contract-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-galah-dr4-contract-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
