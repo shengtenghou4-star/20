@@ -10,6 +10,12 @@ from pathlib import Path
 
 import pyvo
 
+from hou_compact.http_timeout import (
+    DEFAULT_MINIMUM_HTTP_TIMEOUT_SECONDS,
+    MinimumTimeoutSession,
+    validate_minimum_http_timeout,
+)
+
 DEFAULT_GAIA_TAP_URL = "https://gea.esac.esa.int/tap-server/tap"
 
 
@@ -203,6 +209,7 @@ def run_async_query(
     wait_timeout_seconds: float = 3600.0,
     fetch_retries: int = 3,
     delete_job: bool = True,
+    minimum_http_timeout_seconds: float = DEFAULT_MINIMUM_HTTP_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
     """Execute a frozen ADQL query as a persistent server-side UWS job.
 
@@ -210,6 +217,10 @@ def run_async_query(
     server has time to finish. The asynchronous path submits a UWS job, records its URL and
     phase, waits for a terminal state, fetches the result, and optionally removes the remote
     job after the local checksummed table is written.
+
+    PyVO's UWS status requests may otherwise use a fixed ten-second read timeout. A
+    dedicated TAP session raises only undersized HTTP timeouts to
+    ``minimum_http_timeout_seconds``; the scientific wait deadline and query are unchanged.
     """
     query_path, output_path, query = _prepare_query_paths(
         query_path,
@@ -227,17 +238,22 @@ def run_async_query(
         raise ValueError("wait_timeout_seconds must be finite and positive")
     if fetch_retries < 0:
         raise ValueError("fetch_retries must be non-negative")
+    minimum_http_timeout_seconds = validate_minimum_http_timeout(
+        minimum_http_timeout_seconds
+    )
 
     job = None
+    tap_session = MinimumTimeoutSession(minimum_http_timeout_seconds)
     job_details: dict[str, object] = {
         "maxrec": maxrec,
         "requested_execution_duration_seconds": execution_duration_seconds,
         "wait_timeout_seconds": wait_timeout_seconds,
+        "minimum_http_timeout_seconds": minimum_http_timeout_seconds,
         "fetch_retries": fetch_retries,
         "delete_job": delete_job,
     }
     try:
-        service = pyvo.dal.TAPService(tap_url)
+        service = pyvo.dal.TAPService(tap_url, session=tap_session)
         job = service.submit_job(query, maxrec=maxrec)
         job_details["job_url"] = str(job.url)
         job_details["job_id"] = str(job.job_id)
@@ -292,4 +308,5 @@ def run_async_query(
                 # The local result/failure manifest is authoritative. Remote cleanup failure
                 # must not invalidate an otherwise complete acquisition product.
                 pass
+        tap_session.close()
     return manifest
