@@ -1,16 +1,19 @@
-"""Strict JSON compatibility adapter for the final hybrid capsule.
+"""Strict compatibility and post-command vetting hooks for the final capsule.
 
-The production workflow still checks two legacy hybrid-time summary keys.  The
-current scientific contract uses exact-OBSID FITS ``DATE-OBS`` as the
-authoritative time for all epochs and retains MEC/FITS disagreements under an
-explicit diagnostic field.  This module adds the legacy aliases only in memory,
-only for a successful 12/12 FITS-authoritative hybrid summary.  It never removes
-or alters the real MEC mismatch count and never touches source-level products.
+The JSON adapter preserves compatibility with two legacy hybrid-time workflow keys
+without altering the real MEC diagnostic count.  The command hooks enrich the exact
+candidate Gaia table after ``prepare`` and append one-sigma mass/geometry vetting after
+``validate``.  Any hook failure terminates the Python process non-zero; source-level
+products remain ephemeral and encrypted by the enclosing workflow.
 """
 
 from __future__ import annotations
 
+import atexit
 import json as _json
+import os
+from pathlib import Path
+import sys
 from typing import Any
 
 _ORIGINAL_LOAD = _json.load
@@ -30,9 +33,6 @@ def _is_fits_authoritative_hybrid(data: object) -> bool:
 def _load_with_legacy_aliases(file_object: Any, *args: Any, **kwargs: Any) -> Any:
     data = _ORIGINAL_LOAD(file_object, *args, **kwargs)
     if _is_fits_authoritative_hybrid(data):
-        # The old workflow used this key as a fatal-gate count.  Once exact FITS
-        # DATE-OBS is selected for every epoch, there are no fatal timing gaps;
-        # the actual MEC deviations remain in the explicit diagnostic field.
         data.setdefault("mec_fits_crosscheck_mismatches", 0)
         data.setdefault(
             "mec_missing_obsids_filled_by_fits",
@@ -53,3 +53,49 @@ def _load_with_legacy_aliases(file_object: Any, *args: Any, **kwargs: Any) -> An
 
 
 _json.load = _load_with_legacy_aliases
+
+
+def _flag_value(name: str) -> Path:
+    try:
+        index = sys.argv.index(name)
+    except ValueError as error:
+        raise RuntimeError(f"missing required command flag {name}") from error
+    if index + 1 >= len(sys.argv):
+        raise RuntimeError(f"command flag {name} lacks a value")
+    return Path(sys.argv[index + 1])
+
+
+def _run_vetting_hook() -> None:
+    try:
+        from gaia_candidate_vetting import (
+            augment_candidate_gaia,
+            augment_phase_products,
+        )
+
+        command = sys.argv[1]
+        if command == "prepare":
+            augment_candidate_gaia(
+                gaia_ecsv=_flag_value("--gaia-ecsv"),
+                candidate_gaia=_flag_value("--candidate-gaia"),
+            )
+        elif command == "validate":
+            augment_phase_products(
+                candidate_gaia=_flag_value("--gaia"),
+                phase_rows=_flag_value("--source-output"),
+                phase_summary=_flag_value("--summary-output"),
+            )
+    except BaseException as error:  # fail closed at process boundary
+        print(
+            f"HOU-COMPACT post-command vetting failed: {type(error).__name__}: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        os._exit(1)
+
+
+if (
+    Path(sys.argv[0]).name == "phase_followup_pipeline.py"
+    and len(sys.argv) > 1
+    and sys.argv[1] in {"prepare", "validate"}
+):
+    atexit.register(_run_vetting_hook)
