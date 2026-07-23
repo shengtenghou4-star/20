@@ -1,0 +1,52 @@
+name: HOU-COMPACT final capsule smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/hou-compact-final-capsule-smoke.yml'
+      - 'capsules/hou_compact_final/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hou-compact-final-smoke-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install
+        run: python -m pip install -e '.[dev,reference]'
+      - name: Compile final capsule
+        run: |
+          python -m py_compile \
+            capsules/hou_compact_final/hou_compact/*.py \
+            capsules/hou_compact_final/tests/test_final_capsule.py
+      - name: Run candidate-safe synthetic diagnostics
+        env:
+          PYTHONPATH: capsules/hou_compact_final/hou_compact:src
+        run: |
+          set -o pipefail
+          python -m unittest discover \
+            -s capsules/hou_compact_final/tests \
+            -p 'test_final_capsule.py' -v \
+            2>&1 | tee final_capsule_smoke.log
+      - name: Upload candidate-safe smoke log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hou-compact-final-capsule-smoke-${{ github.run_id }}
+          path: final_capsule_smoke.log
+          if-no-files-found: warn
+          retention-days: 14
