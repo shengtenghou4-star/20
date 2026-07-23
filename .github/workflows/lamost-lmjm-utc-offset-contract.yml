@@ -1,0 +1,76 @@
+name: LAMOST LMJM to UTC offset contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/lamost-lmjm-utc-offset-contract.yml'
+      - 'scripts/probe_lamost_lmjm_utc_offset.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lamost-lmjm-utc-offset-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install public pipeline
+        run: python -m pip install -e '.[dev]'
+      - name: Compile candidate-safe probe
+        run: python -m py_compile scripts/probe_lamost_lmjm_utc_offset.py
+      - name: Download and verify official public MEC catalogue
+        id: download
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          url='https://www.lamost.org/dr8/v1.0/catdl?name=dr8_v1.0_LRS_mec.csv.gz'
+          curl --fail --location --retry 4 --retry-all-errors \
+            --connect-timeout 30 --max-time 1800 \
+            --output lamost_lrs_mec.csv.gz "$url" \
+            > mec_download.log 2>&1
+          gzip -t lamost_lrs_mec.csv.gz
+      - name: Compare public MEC LMJM with exact FITS DATE-OBS
+        id: probe
+        if: always()
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          test '${{ steps.download.outcome }}' = 'success'
+          python scripts/probe_lamost_lmjm_utc_offset.py \
+            lamost_lrs_mec.csv.gz \
+            --sample-size 9 \
+            --timeout 180 \
+            --output lamost_lmjm_utc_offset_contract.json \
+            > lamost_lmjm_utc_offset_probe.log 2>&1
+      - name: Remove public bulk catalogue
+        if: always()
+        run: rm -f lamost_lrs_mec.csv.gz
+      - name: Upload candidate-safe offset contract
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lamost-lmjm-utc-offset-contract-${{ github.run_id }}
+          path: |
+            lamost_lmjm_utc_offset_contract.json
+            lamost_lmjm_utc_offset_probe.log
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve contract failure after upload
+        if: always()
+        run: |
+          test '${{ steps.download.outcome }}' = 'success'
+          test '${{ steps.probe.outcome }}' = 'success'
