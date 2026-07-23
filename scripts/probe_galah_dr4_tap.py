@@ -2,7 +2,7 @@
 """Validate the public GALAH DR4 per-spectrum TAP contract.
 
 The probe discovers the public per-spectrum table from TAP_SCHEMA, validates the
-minimal exact-identity/RV schema, and inspects one arbitrary public row.  No
+minimal exact-identity/RV schema, and inspects one arbitrary public row. No
 source identifier, coordinate, RV, uncertainty, or spectrum value is persisted.
 """
 
@@ -54,10 +54,24 @@ def _safe_table_literal(table_name: str) -> str:
     return table_name
 
 
+def _matching_table_names(frame: pd.DataFrame) -> list[str]:
+    mapping = {str(column).strip().lower(): str(column) for column in frame.columns}
+    column = mapping.get("table_name")
+    if column is None:
+        return []
+    return sorted(
+        {
+            str(value).strip()
+            for value in frame[column].dropna()
+            if re.fullmatch(r"[A-Za-z0-9_.]+", str(value).strip()) is not None
+        }
+    )
+
+
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "status": "failure",
         "release": "GALAH DR4",
@@ -73,11 +87,16 @@ def main() -> None:
     try:
         tables, receipt = tap_sync_get(
             args.tap_root,
-            "SELECT TOP 1000 schema_name, table_name FROM TAP_SCHEMA.tables",
-            maxrec=1000,
+            (
+                "SELECT TOP 500 schema_name, table_name FROM TAP_SCHEMA.tables WHERE "
+                "schema_name LIKE '%galah%' OR table_name LIKE '%galah%' OR "
+                "schema_name LIKE '%GALAH%' OR table_name LIKE '%GALAH%'"
+            ),
+            maxrec=500,
             timeout=args.timeout,
         )
         receipts.append(receipt.to_record())
+        payload["matching_table_names"] = _matching_table_names(tables)
         table_name = discover_allspec_table(tables)
         safe_table = _safe_table_literal(table_name)
 
