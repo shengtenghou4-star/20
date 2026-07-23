@@ -151,3 +151,50 @@ def test_openapi_sql_rejects_more_rows_than_maxrec() -> None:
             retries=0,
             opener=opener,
         )
+
+
+def test_source_query_error_envelope_remains_redacted_by_default() -> None:
+    def opener(request: object, *, timeout: float) -> _Response:
+        del request, timeout
+        return _Response(
+            b'{"error":"bad request","description":"SELECT * FROM t WHERE id='
+            b'123456789012345678"}'
+        )
+
+    service = OpenAPISQLService(
+        "https://example.test/openapi",
+        retries=0,
+        opener=opener,
+    )
+    with pytest.raises(LamostOpenAPISQLError, match="error envelope"):
+        service.run_sync("SELECT * FROM t WHERE id=123456789012345678", maxrec=1)
+    record = service.receipts[0].to_record()
+    assert "diagnostic_error_code" not in record
+    assert "diagnostic_error_description" not in record
+    assert "123456789012345678" not in str(record)
+
+
+def test_metadata_probe_can_opt_in_to_sanitized_error_details() -> None:
+    def opener(request: object, *, timeout: float) -> _Response:
+        del request, timeout
+        return _Response(
+            b'{"error":"authorization_required","description":'
+            b'"Please provide token; SELECT secret FROM table WHERE id='
+            b'123456789012345678"}'
+        )
+
+    service = OpenAPISQLService(
+        "https://example.test/openapi",
+        retries=0,
+        diagnostic_error_details=True,
+        opener=opener,
+    )
+    with pytest.raises(LamostOpenAPISQLError, match="authorization_required"):
+        service.run_sync(
+            "SELECT table_name FROM information_schema.columns",
+            maxrec=10,
+        )
+    record = service.receipts[0].to_record()
+    assert record["diagnostic_error_code"] == "authorization_required"
+    assert record["diagnostic_error_description"] == "Please provide token; [sql-redacted]"
+    assert "123456789012345678" not in str(record)
