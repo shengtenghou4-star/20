@@ -3,7 +3,7 @@ name: dark668-gaia-id-full-stack
 on:
   pull_request:
     paths:
-      - "triggers/dark668-gaia-id-full-stack-v01"
+      - "triggers/dark668-gaia-id-full-stack-*"
   workflow_dispatch:
 
 permissions:
@@ -44,15 +44,37 @@ jobs:
             tests/test_lamost_form_rv.py \
             tests/test_lamost_gaia_id_form.py
 
-      - name: Acquire frozen catalogues and build the 668-source seed
-        id: prepare
+      - name: Acquire frozen public catalogues with bounded retries
+        id: acquire
         if: steps.tests.outcome == 'success'
         continue-on-error: true
+        shell: bash
         run: |
-          mkdir -p outputs/private data/raw/dark668
-          python scripts/acquire_dark668_catalogues.py \
-            --output-dir data/raw/dark668 \
-            --summary-output outputs/dark668_catalogue_summary.json
+          set -o pipefail
+          mkdir -p outputs/private data/raw/dark668 outputs
+          : > outputs/dark668_catalogue_acquisition.log
+          for attempt in 1 2 3; do
+            printf 'catalogue acquisition attempt %s\n' "$attempt" \
+              | tee -a outputs/dark668_catalogue_acquisition.log
+            rm -f data/raw/dark668/*.part
+            if python scripts/acquire_dark668_catalogues.py \
+              --output-dir data/raw/dark668 \
+              --summary-output outputs/dark668_catalogue_summary.json \
+              --timeout 180 \
+              2>&1 | tee -a outputs/dark668_catalogue_acquisition.log; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          exit 1
+
+      - name: Build deterministic 668-source seed
+        id: seed
+        if: steps.acquire.outcome == 'success'
+        continue-on-error: true
+        run: |
           python scripts/prepare_dark668_seed.py \
             --input-dir data/raw/dark668 \
             --population all \
@@ -61,7 +83,7 @@ jobs:
 
       - name: Query all candidates by native exact Gaia DR3 ID
         id: gaia_id_rv
-        if: steps.prepare.outcome == 'success'
+        if: steps.seed.outcome == 'success'
         continue-on-error: true
         run: |
           python scripts/query_dark668_lamost_gaia_ids.py \
@@ -136,7 +158,8 @@ jobs:
         env:
           INSTALL_OUTCOME: ${{ steps.install.outcome }}
           TESTS_OUTCOME: ${{ steps.tests.outcome }}
-          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          ACQUIRE_OUTCOME: ${{ steps.acquire.outcome }}
+          SEED_OUTCOME: ${{ steps.seed.outcome }}
           GAIA_ID_RV_OUTCOME: ${{ steps.gaia_id_rv.outcome }}
           COVERAGE_OUTCOME: ${{ steps.coverage.outcome }}
           PERIOD_OUTCOME: ${{ steps.period_score.outcome }}
@@ -164,7 +187,7 @@ jobs:
               if path.exists():
                   receipts[name] = json.loads(path.read_text())
           payload = {
-              'schema_version': '0.1',
+              'schema_version': '0.2',
               'candidate_safe': True,
               'repository': os.environ.get('GITHUB_REPOSITORY'),
               'run_id': os.environ.get('GITHUB_RUN_ID'),
@@ -177,7 +200,8 @@ jobs:
               'steps': {
                   'install': os.environ.get('INSTALL_OUTCOME'),
                   'tests': os.environ.get('TESTS_OUTCOME'),
-                  'prepare': os.environ.get('PREPARE_OUTCOME'),
+                  'catalogue_acquisition': os.environ.get('ACQUIRE_OUTCOME'),
+                  'seed': os.environ.get('SEED_OUTCOME'),
                   'exact_gaia_id_rv': os.environ.get('GAIA_ID_RV_OUTCOME'),
                   'coverage': os.environ.get('COVERAGE_OUTCOME'),
                   'period_score': os.environ.get('PERIOD_OUTCOME'),
@@ -238,12 +262,14 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Upload candidate-safe receipts
+      - name: Upload candidate-safe receipts and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dark668-gaia-id-full-stack-safe-${{ github.run_id }}
-          path: outputs/*.json
+          path: |
+            outputs/*.json
+            outputs/*.log
           if-no-files-found: warn
           retention-days: 30
 
@@ -252,7 +278,8 @@ jobs:
         run: |
           test "${{ steps.install.outcome }}" = "success"
           test "${{ steps.tests.outcome }}" = "success"
-          test "${{ steps.prepare.outcome }}" = "success"
+          test "${{ steps.acquire.outcome }}" = "success"
+          test "${{ steps.seed.outcome }}" = "success"
           test "${{ steps.gaia_id_rv.outcome }}" = "success"
           test "${{ steps.coverage.outcome }}" = "success"
           test "${{ steps.period_score.outcome }}" = "success"
