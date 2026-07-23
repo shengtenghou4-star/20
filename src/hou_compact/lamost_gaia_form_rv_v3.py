@@ -17,6 +17,7 @@ from urllib.request import Request
 
 from hou_compact import lamost_gaia_form_rv as base
 from hou_compact import lamost_gaia_form_rv_v2 as sessioned
+from hou_compact.lamost_form_rv import _bounded_read
 
 # Frozen by the successful public exact-sample and zero-result contracts.
 _ZERO_RESULT_COLUMNS = (
@@ -51,7 +52,7 @@ def _open_with_disposition(
             final_url = str(getattr(response, "geturl", lambda: request.full_url)())
             content_type = str(response.headers.get("Content-Type", ""))
             disposition = str(response.headers.get("Content-Disposition", ""))
-            raw = base._bounded_read(response, maximum_bytes)
+            raw = _bounded_read(response, maximum_bytes)
     except HTTPError as error:
         raise base.LamostGaiaFormError(
             f"LAMOST Gaia form returned HTTP {error.code}"
