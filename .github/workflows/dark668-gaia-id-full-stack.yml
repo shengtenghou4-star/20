@@ -1,9 +1,6 @@
 name: dark668-gaia-id-full-stack
 
 on:
-  pull_request:
-    paths:
-      - "triggers/dark668-gaia-id-full-stack-*"
   workflow_dispatch:
 
 permissions:
@@ -41,6 +38,7 @@ jobs:
             tests/test_dark668_rv.py \
             tests/test_dark668_kepler.py \
             tests/test_dark668_dynamics.py \
+            tests/test_dark668_zero_paths.py \
             tests/test_lamost_form_rv.py \
             tests/test_lamost_gaia_id_form.py
 
