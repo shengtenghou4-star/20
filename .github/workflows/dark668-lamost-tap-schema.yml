@@ -28,16 +28,30 @@ jobs:
       - name: Install
         run: python -m pip install -e .
       - name: Validate metadata extraction tests
-        run: pytest -q tests/test_lamost_public_query_metadata.py
+        id: metadata_tests
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p outputs
+          pytest -vv tests/test_lamost_public_query_metadata.py 2>&1 \
+            | tee outputs/lamost_public_query_metadata_tests.log
       - name: Extract official OpenAPI and search-form contract
+        id: metadata_probe
+        continue-on-error: true
         run: |
           python scripts/probe_lamost_public_query_metadata.py \
             --output outputs/lamost_public_query_metadata.json
-      - name: Upload candidate-safe metadata receipt
+      - name: Upload candidate-safe metadata and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dark668-lamost-public-query-metadata-${{ github.run_id }}
-          path: outputs/lamost_public_query_metadata.json
+          path: outputs/*
           if-no-files-found: warn
           retention-days: 30
+      - name: Preserve metadata failures after diagnostics
+        if: always()
+        run: |
+          test "${{ steps.metadata_tests.outcome }}" = "success"
+          test "${{ steps.metadata_probe.outcome }}" = "success"
