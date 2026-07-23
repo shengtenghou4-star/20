@@ -1,0 +1,194 @@
+name: LAMOST form time-field shape contract
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/lamost-form-time-shape-contract.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install public pipeline
+        run: python -m pip install -e .
+      - name: Probe official public sample without retaining values
+        run: |
+          python - <<'PY'
+          import hashlib
+          import http.cookiejar
+          import json
+          import re
+          import secrets
+          from collections import Counter
+          from pathlib import Path
+          from urllib.request import HTTPCookieProcessor, Request, build_opener
+
+          from hou_compact.lamost_form_rv import _bounded_read, _multipart_body, _parse_delimited
+          from hou_compact.lamost_form_rv_v2 import normalize_parsed_table
+
+          exact_source = re.compile(r'^[0-9]{10,20}$')
+          ordinary_decimal = re.compile(r'^[+-]?[0-9]+(?:\.[0-9]+)?$')
+          iso_date = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+          iso_datetime = re.compile(
+              r'^\d{4}-\d{2}-\d{2}(?:T| )[0-2]\d:[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$'
+          )
+
+          search_url = 'https://www.lamost.org/dr8/v1.0/search'
+          action_url = 'https://www.lamost.org/dr8/v1.0/q'
+          sample_url = 'https://www.lamost.org/dr8/v1.0/u/gaia_source_id.txt'
+          opener = build_opener(HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+          with opener.open(Request(sample_url, headers={
+              'User-Agent': 'HOU-COMPACT/1.1 public time-shape contract',
+              'Accept-Encoding': 'identity',
+          }), timeout=180) as response:
+              sample_raw = _bounded_read(response, 65536)
+          exact = [
+              token for token in re.split(r'[\s,;]+', sample_raw.decode('utf-8-sig'))
+              if exact_source.fullmatch(token or '')
+          ]
+          if not exact:
+              raise RuntimeError('official sample file has no exact Gaia DR2 ID')
+          sample = exact[0]
+
+          with opener.open(Request(search_url, headers={
+              'User-Agent': 'HOU-COMPACT/1.1 public time-shape contract',
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Encoding': 'identity',
+          }), timeout=180) as response:
+              search_raw = _bounded_read(response, 8 * 1024 * 1024)
+
+          columns = (
+              'gaia_source_id', 'obsid', 'obsdate', 'lmjd', 'mjd',
+              'rv', 'rv_err', 'fibermask',
+          )
+          fields = [
+              ('sForm', '0'),
+              ('pos.type', 'none'),
+              ('gaiasourcearea', sample),
+              ('output.collection', 'minimal'),
+              ('output.fmt', 'csv'),
+          ]
+          fields.extend((f'output.combined.{name}', 'on') for name in columns)
+          fields.append(('sBtn', 'Search'))
+          boundary = '----HOUCOMPACT' + secrets.token_hex(16)
+          body = _multipart_body(fields, boundary)
+          request = Request(
+              action_url,
+              data=body,
+              headers={
+                  'Content-Type': f'multipart/form-data; boundary={boundary}',
+                  'Content-Length': str(len(body)),
+                  'User-Agent': 'HOU-COMPACT/1.1 public time-shape contract',
+                  'Accept': 'text/csv,text/plain,*/*;q=0.1',
+                  'Accept-Encoding': 'identity',
+                  'Origin': 'https://www.lamost.org',
+                  'Referer': search_url,
+              },
+              method='POST',
+          )
+          with opener.open(request, timeout=180) as response:
+              status = int(getattr(response, 'status', 200))
+              content_type = str(response.headers.get('Content-Type', ''))
+              disposition = str(response.headers.get('Content-Disposition', ''))
+              raw = _bounded_read(response, 16 * 1024 * 1024)
+          if status != 200:
+              raise RuntimeError(f'form returned HTTP {status}')
+          table = normalize_parsed_table(
+              _parse_delimited(raw, source_kind='form_post', source_url=action_url)
+          )
+          if table is None:
+              raise RuntimeError('form did not return a delimited table')
+          missing = sorted(set(columns) - set(table.columns))
+          if missing:
+              raise RuntimeError(f'missing requested columns: {missing}')
+
+          gaia_index = table.columns.index('gaia_source_id')
+          if any(row[gaia_index].strip() != sample for row in table.rows):
+              raise RuntimeError('response contains a Gaia ID outside the public sample')
+
+          def shape(field: str):
+              index = table.columns.index(field)
+              counts = Counter()
+              lengths = Counter()
+              decimal_places = Counter()
+              for row in table.rows:
+                  token = row[index].strip()
+                  lengths[len(token)] += 1
+                  counts['empty'] += int(not token)
+                  counts['ordinary_decimal'] += int(bool(ordinary_decimal.fullmatch(token)))
+                  counts['exact_integer'] += int(bool(re.fullmatch(r'^[+-]?[0-9]+$', token)))
+                  counts['iso_date'] += int(bool(iso_date.fullmatch(token)))
+                  counts['iso_datetime'] += int(bool(iso_datetime.fullmatch(token)))
+                  counts['contains_T'] += int('T' in token)
+                  counts['contains_space'] += int(' ' in token)
+                  counts['contains_colon'] += int(':' in token)
+                  counts['contains_timezone_marker'] += int(
+                      token.endswith('Z') or bool(re.search(r'[+-]\d{2}:?\d{2}$', token))
+                  )
+                  if ordinary_decimal.fullmatch(token):
+                      decimal_places[len(token.partition('.')[2]) if '.' in token else 0] += 1
+              return {
+                  'row_count': len(table.rows),
+                  'shape_counts': dict(sorted(counts.items())),
+                  'length_histogram': {str(k): v for k, v in sorted(lengths.items())},
+                  'decimal_places_histogram': {
+                      str(k): v for k, v in sorted(decimal_places.items())
+                  },
+              }
+
+          result = {
+              'schema_version': '0.1',
+              'candidate_safe': True,
+              'status': 'success',
+              'official_sample_file': {
+                  'bytes': len(sample_raw),
+                  'sha256': hashlib.sha256(sample_raw).hexdigest(),
+                  'exact_id_count': len(exact),
+              },
+              'response': {
+                  'http_status': status,
+                  'content_type': content_type,
+                  'content_disposition_present': bool(disposition),
+                  'bytes': len(raw),
+                  'sha256': hashlib.sha256(raw).hexdigest(),
+                  'delimiter': table.delimiter,
+                  'row_count': len(table.rows),
+                  'column_count': len(table.columns),
+                  'columns': list(table.columns),
+              },
+              'time_field_shapes': {
+                  field: shape(field) for field in ('obsdate', 'lmjd', 'mjd')
+              },
+              'privacy_contract': (
+                  'No sample identifier, row value, obsid, coordinate, RV, or time value is retained.'
+              ),
+              'claim_boundary': (
+                  'A field-shape contract determines whether targeted form timestamps may replace '
+                  'the bulk MEC time bridge; it does not validate any candidate or orbit.'
+              ),
+          }
+          Path('lamost_form_time_shape_contract.json').write_text(
+              json.dumps(result, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          if not table.rows:
+              raise RuntimeError('public sample returned no rows')
+          PY
+      - name: Upload candidate-safe time-field shape contract
+        uses: actions/upload-artifact@v4
+        with:
+          name: lamost-form-time-shape-contract-${{ github.run_id }}
+          path: lamost_form_time_shape_contract.json
+          if-no-files-found: error
+          retention-days: 30
