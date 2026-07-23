@@ -48,7 +48,10 @@ class FormRVConfig:
     def __post_init__(self) -> None:
         if self.batch_size < 1 or self.batch_size > 100:
             raise ValueError("batch_size must lie in [1, 100]")
-        if not math.isfinite(self.separation_arcsec) or not 0 < self.separation_arcsec <= 10:
+        if (
+            not math.isfinite(self.separation_arcsec)
+            or not 0 < self.separation_arcsec <= 10
+        ):
             raise ValueError("separation_arcsec must lie in (0, 10]")
 
     def to_record(self) -> dict[str, object]:
@@ -199,22 +202,34 @@ def standardize_exact_rows(
     ]
     if raw.empty:
         return pd.DataFrame(columns=output_columns)
+
     parsed_ids: list[int | None] = []
     for value in raw["gaia_source_id"]:
         try:
-            parsed_ids.append(parse_exact_int_text(value, name="form.gaia_source_id"))
+            parsed_ids.append(
+                parse_exact_int_text(value, name="form.gaia_source_id")
+            )
         except (TypeError, ValueError):
             parsed_ids.append(None)
-    selected = raw.assign(_source_id=parsed_ids)
+
+    # Never allow an invalid neighbour ID to force valid 19-digit identifiers
+    # through float64.  Nullable Int64 preserves exact values and missingness.
+    parsed_series = pd.Series(parsed_ids, index=raw.index, dtype="Int64")
+    selected = raw.assign(_source_id=parsed_series)
     selected = selected.loc[selected["_source_id"].isin(target_ids)].copy()
     if selected.empty:
         return pd.DataFrame(columns=output_columns)
+
     selected["source_id"] = selected["_source_id"].astype("int64")
-    selected["obsid"] = pd.to_numeric(selected["obsid"], errors="raise").astype("int64")
+    selected["obsid"] = pd.to_numeric(
+        selected["obsid"], errors="raise"
+    ).astype("int64")
     if selected["obsid"].duplicated().any():
         raise LamostFormRVError(
-            f"anonymous form returned {int(selected['obsid'].duplicated().sum())} duplicate obsids"
+            "anonymous form returned "
+            f"{int(selected['obsid'].duplicated().sum())} duplicate obsids"
         )
+
     mjd = pd.to_numeric(selected["mjd"], errors="coerce")
     rv = pd.to_numeric(selected["rv"], errors="coerce")
     rv_error = pd.to_numeric(selected["rv_err"], errors="coerce")
@@ -222,6 +237,7 @@ def standardize_exact_rows(
     fiberstatus = fiber.fillna(1).astype("int64")
     finite = np.isfinite(mjd) & np.isfinite(rv) & np.isfinite(rv_error)
     success = finite & rv_error.gt(0) & fiberstatus.eq(0)
+
     standardized = pd.DataFrame(
         {
             "source_id": selected["source_id"],
@@ -275,7 +291,9 @@ def query_candidate_batches(
         raw = parse_browser_csv(body)
         standardized = standardize_exact_rows(raw, target_ids)
         obsids = set(
-            pd.to_numeric(standardized.get("obsid", pd.Series(dtype=int))).astype(int)
+            pd.to_numeric(
+                standardized.get("obsid", pd.Series(dtype=int))
+            ).astype(int)
         )
         duplicate_across_batches = seen_obsids.intersection(obsids)
         if duplicate_across_batches:
@@ -317,7 +335,9 @@ def candidate_safe_form_rv_summary(
         if not rows.empty
         else pd.Series(dtype=int)
     )
-    success = rows.get("success", pd.Series(False, index=rows.index)).astype(bool)
+    success = rows.get(
+        "success", pd.Series(False, index=rows.index)
+    ).astype(bool)
     clean_counts = (
         rows.loc[success].groupby("source_id", sort=False).size()
         if success.any()
