@@ -1,0 +1,6 @@
+Dark-668 DESI DR1 MWS exact Gaia-ID coadd scan trigger v0.1.
+
+The public desi_dr1.mws TAP contract and deterministic tests are green. This
+one-shot run queries all 668 exact Gaia DR3 identifiers in bounded non-backup
+batches, encrypts TARGETID/HEALPix/source-file locators and coadd measurements,
+and persists only candidate-safe aggregate coverage counts publicly.
