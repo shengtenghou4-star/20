@@ -46,7 +46,7 @@ def _fits_bytes() -> bytes:
         name="RVTAB",
     )
     fibermap = fits.BinTableHDU.from_columns(
-        [fits.Column(name="TARGETID", format="K", array=np.array([101, 102]))],
+        [fits.Column(name="TARGETID", format="K", array=np.array([201, 202]))],
         name="FIBERMAP",
     )
     buffer = BytesIO()
