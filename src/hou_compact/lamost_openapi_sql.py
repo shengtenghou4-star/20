@@ -50,9 +50,12 @@ class OpenAPISQLReceipt:
     maxrec: int
     response_kind: str
     top_level_keys: tuple[str, ...] = ()
+    diagnostic_error_code: str | None = None
+    diagnostic_error_description: str | None = None
 
     def to_record(self) -> dict[str, object]:
-        return asdict(self)
+        record = asdict(self)
+        return {key: value for key, value in record.items() if value is not None}
 
 
 def _top_level_keys(payload: Any) -> tuple[str, ...]:
@@ -78,6 +81,43 @@ def _api_error(payload: Any) -> bool:
     status = str(lowered.get("status", "")).strip().lower()
     success = lowered.get("success")
     return status in {"error", "failed", "failure"} or success is False
+
+
+def _sanitize_diagnostic_text(value: object, *, limit: int = 500) -> str:
+    """Bound and redact metadata-only API diagnostics before persistence."""
+
+    text = " ".join(str(value).split())
+    text = re.sub(r"https?://\S+", "[url-redacted]", text)
+    text = re.sub(r"\b\d{12,}\b", "[long-number-redacted]", text)
+    text = re.sub(
+        r"(?is)\bselect\b.+",
+        "[sql-redacted]",
+        text,
+        count=1,
+    )
+    return text[:limit]
+
+
+def _diagnostic_error_details(payload: Any) -> tuple[str | None, str | None]:
+    if not isinstance(payload, dict):
+        return None, None
+    lowered = {str(key).lower(): value for key, value in payload.items()}
+    code_value = lowered.get("error", lowered.get("code", lowered.get("status")))
+    description_value = lowered.get(
+        "description",
+        lowered.get("message", lowered.get("detail")),
+    )
+    code = (
+        _sanitize_diagnostic_text(code_value, limit=160)
+        if code_value is not None
+        else None
+    )
+    description = (
+        _sanitize_diagnostic_text(description_value)
+        if description_value is not None
+        else None
+    )
+    return code or None, description or None
 
 
 def _extract_sqlid(payload: Any) -> str | None:
@@ -240,6 +280,7 @@ def _request_json(
     retries: int,
     maximum_response_bytes: int,
     maximum_url_characters: int,
+    diagnostic_error_details: bool,
     opener: Any,
 ) -> tuple[Any, OpenAPISQLReceipt]:
     encoded = urlencode({key: value for key, value in params.items() if value is not None})
@@ -304,6 +345,10 @@ def _request_json(
                     "LAMOST OpenAPI SQL response was not valid UTF-8 JSON",
                     receipts=[receipt],
                 ) from error
+            diagnostic_code: str | None = None
+            diagnostic_description: str | None = None
+            if diagnostic_error_details and _api_error(payload):
+                diagnostic_code, diagnostic_description = _diagnostic_error_details(payload)
             receipt = OpenAPISQLReceipt(
                 endpoint=endpoint,
                 request_kind=request_kind,
@@ -316,6 +361,8 @@ def _request_json(
                 maxrec=maxrec,
                 response_kind=_response_kind(payload),
                 top_level_keys=_top_level_keys(payload),
+                diagnostic_error_code=diagnostic_code,
+                diagnostic_error_description=diagnostic_description,
             )
             if status != 200:
                 raise LamostOpenAPISQLError(
@@ -323,10 +370,16 @@ def _request_json(
                     receipts=[receipt],
                 )
             if _api_error(payload):
-                raise LamostOpenAPISQLError(
-                    "LAMOST OpenAPI SQL returned an error envelope",
-                    receipts=[receipt],
-                )
+                message = "LAMOST OpenAPI SQL returned an error envelope"
+                if diagnostic_error_details:
+                    detail = ": ".join(
+                        value
+                        for value in (diagnostic_code, diagnostic_description)
+                        if value
+                    )
+                    if detail:
+                        message = f"{message}: {detail}"
+                raise LamostOpenAPISQLError(message, receipts=[receipt])
             return payload, receipt
         except HTTPError as error:
             last_error = error
@@ -372,6 +425,7 @@ def execute_openapi_sql(
     retries: int = 2,
     maximum_response_bytes: int = 32 * 1024 * 1024,
     maximum_url_characters: int = 16_000,
+    diagnostic_error_details: bool = False,
     opener: Any = urlopen,
 ) -> tuple[pd.DataFrame, list[OpenAPISQLReceipt]]:
     """Execute a bounded public LAMOST SQL request and return candidate-safe receipts."""
@@ -406,6 +460,7 @@ def execute_openapi_sql(
             retries=retries,
             maximum_response_bytes=maximum_response_bytes,
             maximum_url_characters=maximum_url_characters,
+            diagnostic_error_details=diagnostic_error_details,
             opener=opener,
         )
         receipts.append(receipt)
@@ -427,6 +482,7 @@ def execute_openapi_sql(
                 retries=retries,
                 maximum_response_bytes=maximum_response_bytes,
                 maximum_url_characters=maximum_url_characters,
+                diagnostic_error_details=diagnostic_error_details,
                 opener=opener,
             )
             receipts.append(count_receipt)
@@ -453,6 +509,7 @@ def execute_openapi_sql(
                 retries=retries,
                 maximum_response_bytes=maximum_response_bytes,
                 maximum_url_characters=maximum_url_characters,
+                diagnostic_error_details=diagnostic_error_details,
                 opener=opener,
             )
             receipts.append(result_receipt)
@@ -488,6 +545,7 @@ class OpenAPISQLService:
         retries: int = 2,
         maximum_response_bytes: int = 32 * 1024 * 1024,
         maximum_url_characters: int = 16_000,
+        diagnostic_error_details: bool = False,
         opener: Any = urlopen,
     ) -> None:
         self.openapi_root = openapi_root
@@ -498,6 +556,7 @@ class OpenAPISQLService:
         self.retries = retries
         self.maximum_response_bytes = maximum_response_bytes
         self.maximum_url_characters = maximum_url_characters
+        self.diagnostic_error_details = diagnostic_error_details
         self.opener = opener
         self.receipts: list[OpenAPISQLReceipt] = []
 
@@ -519,6 +578,7 @@ class OpenAPISQLService:
                 retries=self.retries,
                 maximum_response_bytes=self.maximum_response_bytes,
                 maximum_url_characters=self.maximum_url_characters,
+                diagnostic_error_details=self.diagnostic_error_details,
                 opener=self.opener,
             )
         except LamostOpenAPISQLError as error:
