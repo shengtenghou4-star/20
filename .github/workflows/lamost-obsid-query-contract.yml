@@ -6,8 +6,10 @@ on:
     paths:
       - "scripts/probe_lamost_search_form.py"
       - "scripts/probe_lamost_obsid_csv.py"
+      - "scripts/probe_lamost_obsid_csv_v2.py"
       - "tests/test_probe_lamost_search_form.py"
       - "tests/test_probe_lamost_obsid_csv.py"
+      - "tests/test_probe_lamost_obsid_csv_v2.py"
       - ".github/workflows/lamost-obsid-query-contract.yml"
 
 permissions:
@@ -31,8 +33,10 @@ jobs:
           python -m py_compile \
             scripts/probe_lamost_search_form.py \
             scripts/probe_lamost_obsid_csv.py \
+            scripts/probe_lamost_obsid_csv_v2.py \
             tests/test_probe_lamost_search_form.py \
-            tests/test_probe_lamost_obsid_csv.py
+            tests/test_probe_lamost_obsid_csv.py \
+            tests/test_probe_lamost_obsid_csv_v2.py
           python -m unittest discover \
             -s tests \
             -p 'test_probe_lamost_search_form.py' \
@@ -40,6 +44,10 @@ jobs:
           python -m unittest discover \
             -s tests \
             -p 'test_probe_lamost_obsid_csv.py' \
+            -v
+          python -m unittest discover \
+            -s tests \
+            -p 'test_probe_lamost_obsid_csv_v2.py' \
             -v
       - name: Probe public LAMOST search-form metadata contract
         id: form_probe
@@ -52,7 +60,7 @@ jobs:
         id: csv_probe
         continue-on-error: true
         run: |
-          python scripts/probe_lamost_obsid_csv.py \
+          python scripts/probe_lamost_obsid_csv_v2.py \
             --output lamost_obsid_csv_contract.json \
             > lamost_obsid_csv_probe.log 2>&1
       - name: Upload candidate-safe obsid query contracts
