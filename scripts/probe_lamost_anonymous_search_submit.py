@@ -15,7 +15,6 @@ import hashlib
 from http.cookiejar import CookieJar
 from io import BytesIO
 import json
-import math
 from pathlib import Path
 import re
 from urllib.parse import urljoin, urlparse
