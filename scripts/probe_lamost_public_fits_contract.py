@@ -16,6 +16,7 @@ import pandas as pd
 
 from hou_compact.lamost_conesearch import query_lamost_cone
 from hou_compact.lamost_spectrum_fits import (
+    LamostSpectrumFITSError,
     download_lamost_spectrum_fits,
     extract_lasp_rv_from_fits,
 )
@@ -62,7 +63,7 @@ def _identity_text(value: object) -> str:
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "candidate_safe": True,
         "status": "failure",
         "transport": "anonymous_ivoa_conesearch_plus_public_fits",
@@ -123,6 +124,8 @@ def main() -> None:
         )
         _write(args.output, payload)
     except Exception as error:
+        if isinstance(error, LamostSpectrumFITSError) and error.receipt is not None:
+            payload["fits_failure_receipt"] = error.receipt.to_record()
         payload["error_type"] = type(error).__name__
         payload["error"] = str(error)[:2000]
         _write(args.output, payload)
