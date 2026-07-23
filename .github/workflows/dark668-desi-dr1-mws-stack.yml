@@ -1,0 +1,207 @@
+name: dark668-desi-dr1-mws-stack
+
+on:
+  pull_request:
+    paths:
+      - "triggers/dark668-desi-dr1-mws-stack-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-desi-dr1-mws-stack-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  desi-dr1-mws-stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        id: install
+        continue-on-error: true
+        run: python -m pip install -e '.[dev]'
+
+      - name: Run focused deterministic tests
+        id: tests
+        if: steps.install.outcome == 'success'
+        continue-on-error: true
+        run: |
+          pytest -q \
+            tests/test_dark668.py \
+            tests/test_dark668_seed.py \
+            tests/test_datacentral_tap.py \
+            tests/test_desi_dr1.py
+
+      - name: Acquire frozen public catalogues with bounded retries
+        id: acquire
+        if: steps.tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p outputs/private data/raw/dark668 outputs
+          : > outputs/dark668_catalogue_acquisition.log
+          for attempt in 1 2 3; do
+            printf 'catalogue acquisition attempt %s\n' "$attempt" \
+              | tee -a outputs/dark668_catalogue_acquisition.log
+            rm -f data/raw/dark668/*.part
+            if python scripts/acquire_dark668_catalogues.py \
+              --output-dir data/raw/dark668 \
+              --summary-output outputs/dark668_catalogue_summary.json \
+              --timeout 180 \
+              2>&1 | tee -a outputs/dark668_catalogue_acquisition.log; then
+              exit 0
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep $((attempt * 10))
+            fi
+          done
+          exit 1
+
+      - name: Build deterministic 668-source seed
+        id: seed
+        if: steps.acquire.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/prepare_dark668_seed.py \
+            --input-dir data/raw/dark668 \
+            --population all \
+            --output outputs/private/dark668_seed.csv \
+            --safe-summary outputs/dark668_seed_summary.json
+
+      - name: Query DESI DR1 MWS by exact Gaia DR3 ID
+        id: desi_mws
+        if: steps.seed.outcome == 'success'
+        continue-on-error: true
+        run: |
+          python scripts/query_dark668_desi_dr1_mws.py \
+            outputs/private/dark668_seed.csv \
+            --output outputs/private/dark668_desi_dr1_mws.csv \
+            --safe-summary outputs/dark668_desi_dr1_mws_summary.json \
+            --batch-size 40 \
+            --maxrec-per-batch 5000 \
+            --timeout 240
+
+      - name: Build candidate-safe DESI MWS master receipt
+        if: always()
+        env:
+          INSTALL_OUTCOME: ${{ steps.install.outcome }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          ACQUIRE_OUTCOME: ${{ steps.acquire.outcome }}
+          SEED_OUTCOME: ${{ steps.seed.outcome }}
+          DESI_MWS_OUTCOME: ${{ steps.desi_mws.outcome }}
+        run: |
+          mkdir -p outputs
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          names = [
+              'dark668_catalogue_summary.json',
+              'dark668_seed_summary.json',
+              'dark668_desi_dr1_mws_summary.json',
+          ]
+          receipts = {}
+          for name in names:
+              path = Path('outputs') / name
+              if path.exists():
+                  receipts[name] = json.loads(path.read_text())
+          payload = {
+              'schema_version': '0.1',
+              'candidate_safe': True,
+              'repository': os.environ.get('GITHUB_REPOSITORY'),
+              'run_id': os.environ.get('GITHUB_RUN_ID'),
+              'run_attempt': os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'identity_route': (
+                  'Exact Gaia DR3 integer constraints against desi_dr1.mws; no positional '
+                  'association; program=backup excluded.'
+              ),
+              'steps': {
+                  'install': os.environ.get('INSTALL_OUTCOME'),
+                  'tests': os.environ.get('TESTS_OUTCOME'),
+                  'catalogue_acquisition': os.environ.get('ACQUIRE_OUTCOME'),
+                  'seed': os.environ.get('SEED_OUTCOME'),
+                  'exact_desi_mws': os.environ.get('DESI_MWS_OUTCOME'),
+              },
+              'receipts': receipts,
+              'claim_boundary': (
+                  'This stack freezes DESI coadded coverage and encrypted single-epoch file '
+                  'locators only. It is not a single-epoch variability, orbit, binary, '
+                  'compact-object, or novelty result.'
+              ),
+          }
+          Path('outputs/dark668_desi_dr1_mws_stack_summary.json').write_text(
+              json.dumps(payload, indent=2, sort_keys=True)
+          )
+          print(json.dumps(payload, indent=2, sort_keys=True))
+          PY
+
+      - name: Encrypt all source-level evidence before upload
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p encrypted_output
+          if [[ -d outputs/private ]]; then
+            tar -C outputs/private -czf /tmp/dark668_desi_mws_private.tar.gz .
+          else
+            mkdir -p /tmp/dark668_empty
+            printf '%s\n' 'No source-level output directory was produced.' \
+              > /tmp/dark668_empty/NO_SOURCE_OUTPUT.txt
+            tar -C /tmp/dark668_empty -czf /tmp/dark668_desi_mws_private.tar.gz .
+          fi
+          openssl rand -hex 32 > /tmp/dark668_desi_mws_passphrase.txt
+          openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
+            -pass file:/tmp/dark668_desi_mws_passphrase.txt \
+            -in /tmp/dark668_desi_mws_private.tar.gz \
+            -out encrypted_output/dark668_desi_mws_private.tar.gz.enc
+          openssl pkeyutl -encrypt \
+            -pubin \
+            -inkey keys/hou_compact_relay_public.pem \
+            -in /tmp/dark668_desi_mws_passphrase.txt \
+            -out encrypted_output/dark668_desi_mws_private.key.enc \
+            -pkeyopt rsa_padding_mode:oaep \
+            -pkeyopt rsa_oaep_md:sha256
+          cp outputs/dark668_desi_dr1_mws_stack_summary.json encrypted_output/
+          sha256sum encrypted_output/* > encrypted_output/SHA256SUMS
+          shred -u \
+            /tmp/dark668_desi_mws_passphrase.txt \
+            /tmp/dark668_desi_mws_private.tar.gz
+          rm -rf /tmp/dark668_empty outputs/private data/raw/dark668
+
+      - name: Upload encrypted source-level evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-desi-dr1-mws-stack-encrypted-${{ github.run_id }}
+          path: encrypted_output/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload candidate-safe receipts and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-desi-dr1-mws-stack-safe-${{ github.run_id }}
+          path: |
+            outputs/*.json
+            outputs/*.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Preserve failures after encrypted persistence
+        if: always()
+        run: |
+          test "${{ steps.install.outcome }}" = "success"
+          test "${{ steps.tests.outcome }}" = "success"
+          test "${{ steps.acquire.outcome }}" = "success"
+          test "${{ steps.seed.outcome }}" = "success"
+          test "${{ steps.desi_mws.outcome }}" = "success"
