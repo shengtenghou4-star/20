@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from hou_compact.lamost_gaia_form_rv import acquire_gaia_form_rv
+from hou_compact.lamost_gaia_form_rv_v2 import acquire_gaia_form_rv_sessioned
 
 
 def parse_args() -> argparse.Namespace:
@@ -18,6 +18,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--private-manifest", type=Path, required=True)
     parser.add_argument("--safe-summary", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument(
+        "--batches-per-session",
+        type=int,
+        default=5,
+        help="maximum successful form POST batches per fresh cookie session",
+    )
     parser.add_argument(
         "--collection",
         choices=("minimal", "typical", "maximal"),
@@ -33,13 +39,14 @@ def main() -> None:
     args = parse_args()
     if args.maximum_response_mb <= 0:
         raise ValueError("--maximum-response-mb must be positive")
-    summary = acquire_gaia_form_rv(
+    summary = acquire_gaia_form_rv_sessioned(
         bridge_input=args.bridge,
         rows_output=args.rows_output,
         overlap_output=args.overlap_output,
         private_manifest_path=args.private_manifest,
         safe_summary_path=args.safe_summary,
         batch_size=args.batch_size,
+        batches_per_session=args.batches_per_session,
         collection=args.collection,
         timeout=args.timeout,
         maximum_response_bytes=int(args.maximum_response_mb * 1024**2),
