@@ -1,10 +1,11 @@
-name: dark668-lamost-public-query-metadata
+name: dark668-lamost-anonymous-table-query
 
 on:
   pull_request:
     paths:
-      - "scripts/probe_lamost_public_query_metadata.py"
-      - "tests/test_lamost_public_query_metadata.py"
+      - "src/hou_compact/lamost_table_query.py"
+      - "scripts/probe_lamost_anonymous_table_query.py"
+      - "tests/test_lamost_table_query.py"
       - ".github/workflows/dark668-lamost-tap-schema.yml"
   workflow_dispatch:
 
@@ -12,11 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-public-query-metadata-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-anonymous-table-query-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  probe-public-query-metadata:
+  validate-anonymous-table-query:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -26,32 +27,24 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install
-        run: python -m pip install -e .
-      - name: Validate metadata extraction tests
-        id: metadata_tests
+        run: python -m pip install -e '.[dev]'
+      - name: Validate bounded TableQuery transport
+        run: pytest -q tests/test_lamost_table_query.py
+      - name: Probe anonymous combined RV query
+        id: table_probe
         continue-on-error: true
-        shell: bash
         run: |
-          set -o pipefail
           mkdir -p outputs
-          pytest -vv tests/test_lamost_public_query_metadata.py 2>&1 \
-            | tee outputs/lamost_public_query_metadata_tests.log
-      - name: Extract official OpenAPI and search-form contract
-        id: metadata_probe
-        continue-on-error: true
-        run: |
-          python scripts/probe_lamost_public_query_metadata.py \
-            --output outputs/lamost_public_query_metadata.json
-      - name: Upload candidate-safe metadata and diagnostics
+          python scripts/probe_lamost_anonymous_table_query.py \
+            --output outputs/lamost_anonymous_table_query_contract.json
+      - name: Upload candidate-safe TableQuery receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dark668-lamost-public-query-metadata-${{ github.run_id }}
+          name: dark668-lamost-anonymous-table-query-${{ github.run_id }}
           path: outputs/*
           if-no-files-found: warn
           retention-days: 30
-      - name: Preserve metadata failures after diagnostics
+      - name: Preserve live query failure after receipt
         if: always()
-        run: |
-          test "${{ steps.metadata_tests.outcome }}" = "success"
-          test "${{ steps.metadata_probe.outcome }}" = "success"
+        run: test "${{ steps.table_probe.outcome }}" = "success"
