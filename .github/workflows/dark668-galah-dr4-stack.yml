@@ -1,9 +1,6 @@
 name: dark668-galah-dr4-stack
 
 on:
-  pull_request:
-    paths:
-      - "triggers/dark668-galah-dr4-stack-*"
   workflow_dispatch:
 
 permissions:
