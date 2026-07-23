@@ -48,12 +48,13 @@ def _write(path: Path, payload: dict[str, object]) -> None:
 def main() -> None:
     args = parse_args()
     payload: dict[str, object] = {
-        "schema_version": "0.5",
+        "schema_version": "0.6",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
         "transport": "bounded_openapi_sql_get",
+        "diagnostic_scope": "metadata_only_sanitized_error_details",
         "claim_boundary": _CLAIM_BOUNDARY,
     }
     service: OpenAPISQLService | None = None
@@ -73,6 +74,7 @@ def main() -> None:
             dr_version=args.dr_version,
             sub_version=args.sub_version,
             timeout=args.timeout,
+            diagnostic_error_details=True,
         )
         payload["sql_endpoint"] = service.endpoint
         contract_errors: dict[str, dict[str, str]] = {}
