@@ -101,6 +101,26 @@ def _safe_final_path(url: str) -> str:
     return parsed.path or "/"
 
 
+def _browser_headers(
+    endpoint: str,
+    content_type: str,
+    referer: str | None,
+) -> dict[str, str]:
+    headers = {
+        "User-Agent": "HOU-COMPACT/0.1 bounded public LAMOST form client",
+        "Accept": "text/html,text/csv,application/json,*/*;q=0.1",
+        "Content-Type": content_type,
+    }
+    if referer is not None:
+        parsed_endpoint = urlparse(endpoint)
+        parsed_referer = urlparse(referer)
+        if parsed_referer.scheme != "https" or parsed_referer.netloc != parsed_endpoint.netloc:
+            raise ValueError("referer must be same-origin HTTPS")
+        headers["Referer"] = referer
+        headers["Origin"] = f"{parsed_endpoint.scheme}://{parsed_endpoint.netloc}"
+    return headers
+
+
 def submit_search_form(
     endpoint: str,
     fields: Iterable[tuple[str, object]],
@@ -111,6 +131,7 @@ def submit_search_form(
     maximum_response_bytes: int = 32 * 1024 * 1024,
     opener: Any | None = None,
     boundary: str | None = None,
+    referer: str | None = None,
 ) -> tuple[bytes, str, SearchFormReceipt]:
     """Submit one bounded public search form and return raw response bytes."""
 
@@ -126,15 +147,12 @@ def submit_search_form(
     body = encode_multipart_fields(fields, boundary=actual_boundary)
     if len(body) > maximum_request_bytes:
         raise ValueError("multipart search request exceeded the byte limit")
+    content_type = f"multipart/form-data; boundary={actual_boundary}"
     request = Request(
         endpoint,
         data=body,
         method="POST",
-        headers={
-            "User-Agent": "HOU-COMPACT/0.1 bounded public LAMOST form client",
-            "Accept": "text/html,text/csv,application/json,*/*;q=0.1",
-            "Content-Type": f"multipart/form-data; boundary={actual_boundary}",
-        },
+        headers=_browser_headers(endpoint, content_type, referer),
     )
     client = opener or build_opener(HTTPCookieProcessor(CookieJar()))
     last_error: BaseException | None = None
@@ -142,7 +160,7 @@ def submit_search_form(
         try:
             with client.open(request, timeout=timeout) as response:
                 status = int(getattr(response, "status", 200))
-                content_type = str(response.headers.get("Content-Type", ""))
+                response_content_type = str(response.headers.get("Content-Type", ""))
                 final_url = str(getattr(response, "url", endpoint))
                 response_body = response.read(maximum_response_bytes + 1)
             if len(response_body) > maximum_response_bytes:
@@ -156,8 +174,8 @@ def submit_search_form(
                 request_sha256=hashlib.sha256(body).hexdigest(),
                 response_bytes=len(response_body),
                 response_sha256=hashlib.sha256(response_body).hexdigest(),
-                content_type=content_type,
-                response_kind=_response_kind(content_type, response_body),
+                content_type=response_content_type,
+                response_kind=_response_kind(response_content_type, response_body),
             )
             if status != 200:
                 raise LamostSearchFormError(
