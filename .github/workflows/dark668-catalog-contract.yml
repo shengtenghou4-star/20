@@ -1,0 +1,53 @@
+name: dark668-catalog-contract
+
+on:
+  pull_request:
+    paths:
+      - "src/hou_compact/dark668.py"
+      - "scripts/acquire_dark668_catalogues.py"
+      - "scripts/rank_dark668_targets.py"
+      - "tests/test_dark668.py"
+      - "docs/DARK668_PROTOCOL_v0.1.md"
+      - ".github/workflows/dark668-catalog-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frozen-input-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Unit tests
+        run: pytest -q tests/test_dark668.py
+      - name: Acquire and validate public inputs
+        run: |
+          python scripts/acquire_dark668_catalogues.py \
+            --output-dir data/raw/dark668 \
+            --summary-output outputs/dark668_catalogue_summary.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('outputs/dark668_catalogue_summary.json').read_text())
+          assert payload['promising_rows_total'] == 668
+          assert payload['candidate_safe'] is True
+          PY
+      - name: Upload candidate-safe receipt only
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-catalogue-contract-${{ github.run_id }}
+          path: outputs/dark668_catalogue_summary.json
+          if-no-files-found: error
+          retention-days: 30
