@@ -1,21 +1,13 @@
 name: dark668-lamost-anonymous-form-rv
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/lamost_search_form.py"
-      - "src/hou_compact/lamost_form_response.py"
-      - "scripts/probe_lamost_anonymous_form_rv_v2.py"
-      - "tests/test_lamost_search_form.py"
-      - "tests/test_lamost_form_response.py"
-      - ".github/workflows/dark668-lamost-tap-schema.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-lamost-anonymous-form-rv-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-lamost-anonymous-form-rv-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
