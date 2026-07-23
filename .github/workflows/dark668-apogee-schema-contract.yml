@@ -1,0 +1,45 @@
+name: dark668-apogee-schema-contract
+
+on:
+  pull_request:
+    paths:
+      - "src/hou_compact/skyserver_sql.py"
+      - "scripts/probe_apogee_dr17_schema.py"
+      - "tests/test_skyserver_sql.py"
+      - ".github/workflows/dark668-apogee-schema-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dark668-apogee-schema-contract-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate-apogee-schema:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[dev]'
+      - name: Validate bounded SkyServer SQL transport
+        run: pytest -q tests/test_skyserver_sql.py
+      - name: Probe APOGEE DR17 public visit schema
+        run: |
+          mkdir -p outputs
+          python scripts/probe_apogee_dr17_schema.py \
+            --output outputs/apogee_dr17_schema_contract.json
+      - name: Upload candidate-safe schema receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dark668-apogee-schema-contract-${{ github.run_id }}
+          path: outputs/apogee_dr17_schema_contract.json
+          if-no-files-found: warn
+          retention-days: 30
