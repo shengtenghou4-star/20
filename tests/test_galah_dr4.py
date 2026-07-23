@@ -17,11 +17,14 @@ def test_discover_and_validate_allspec_contract() -> None:
     tables = pd.DataFrame(
         {
             "schema_name": ["galah_dr4", "galah_dr4"],
-            "table_name": ["galah_dr4.main_star", "galah_dr4.main_spec"],
+            "table_name": [
+                "galah_dr4.mainstartable",
+                "galah_dr4.mainspectable",
+            ],
         }
     )
     table = discover_allspec_table(tables)
-    assert table == "galah_dr4.main_spec"
+    assert table == "galah_dr4.mainspectable"
     columns = pd.DataFrame(
         {
             "column_name": [
@@ -46,7 +49,7 @@ def test_discovery_rejects_ambiguous_tables() -> None:
         {
             "table_name": [
                 "galah_dr4.allspec_a",
-                "galah_dr4.allspec_b",
+                "galah_dr4.mainspectable",
             ]
         }
     )
@@ -55,17 +58,17 @@ def test_discovery_rejects_ambiguous_tables() -> None:
 
 
 def test_queries_are_exact_and_bounded() -> None:
-    sample = build_sample_query("galah_dr4.main_spec")
+    sample = build_sample_query("galah_dr4.mainspectable")
     assert "TOP 1" in sample
     assert "e_rv_comp_1 > 0" in sample
     query = build_exact_id_query(
-        "galah_dr4.main_spec",
+        "galah_dr4.mainspectable",
         [2676113965163724160, 1234567890123456789],
     )
     assert "gaiadr3_source_id IN" in query
     assert "2676113965163724160" in query
     with pytest.raises(ValueError, match="at most 50"):
-        build_exact_id_query("galah_dr4.main_spec", range(1, 52))
+        build_exact_id_query("galah_dr4.mainspectable", range(1, 52))
 
 
 def test_standardize_exact_rows_enforces_identity_and_quality() -> None:
