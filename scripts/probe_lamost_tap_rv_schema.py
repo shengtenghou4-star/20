@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Validate the direct Gaia DR3 LAMOST DR8 v2.0 RV contract.
+"""Validate the anonymous LAMOST DR8 v2.0 ConeSearch RV contract.
 
-The probe requests one arbitrary public AFGK spectrum from the documented
-``stellar`` table.  It verifies the exact-character Gaia DR3 identifier and the
-per-spectrum time/RV/error/quality fields.  No returned row values are persisted.
+The official example cone is used only to inspect the returned column contract in
+memory.  No coordinates, source identifiers, radial velocities, or row values are
+persisted.  Position is accepted only as row discovery; downstream identity still
+requires exact returned Gaia DR3 character equality.
 """
 
 from __future__ import annotations
@@ -13,26 +14,31 @@ import json
 import re
 from pathlib import Path
 
+from hou_compact.lamost_conesearch import query_lamost_cone
 from hou_compact.lamost_dr3_spectra import DR3SpectrumSpec
 from hou_compact.lamost_openapi import discover_openapi_contract
-from hou_compact.lamost_openapi_sql import OpenAPISQLService
 
 _CLAIM_BOUNDARY = (
-    "One arbitrary public contract row is inspected in memory only. No row values, "
-    "source identifiers, coordinates, spectra, or radial velocities are persisted."
+    "One arbitrary public cone is inspected in memory only. No row values, source "
+    "identifiers, coordinates, spectra, or radial velocities are persisted. Position "
+    "is discovery only; exact returned Gaia DR3 character equality remains mandatory."
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--openapi-root", default="https://www.lamost.org/openapi")
+    parser.add_argument(
+        "--conesearch-endpoint",
+        default="https://www.lamost.org/dr8/v2.0/voservice/conesearch",
+    )
     parser.add_argument("--dr-version", default="dr8")
     parser.add_argument("--sub-version", default="v2.0")
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("outputs/lamost_tap_rv_schema.json"),
+        default=Path("outputs/lamost_conesearch_contract.json"),
     )
     return parser.parse_args()
 
@@ -44,21 +50,27 @@ def _write(path: Path, payload: dict[str, object]) -> None:
     print(text)
 
 
+def _identity_text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("ascii").strip()
+    return str(value).strip()
+
+
 def main() -> None:
     args = parse_args()
     spec = DR3SpectrumSpec()
     payload: dict[str, object] = {
-        "schema_version": "0.7",
+        "schema_version": "0.8",
         "candidate_safe": True,
         "status": "failure",
         "release": f"{args.dr_version}/{args.sub_version}",
         "openapi_root": args.openapi_root,
-        "transport": "bounded_openapi_sql_get",
-        "diagnostic_scope": "single_arbitrary_public_contract_row_values_discarded",
+        "conesearch_endpoint": args.conesearch_endpoint,
+        "transport": "bounded_anonymous_ivao_conesearch",
+        "diagnostic_scope": "official_example_cone_values_discarded",
         "frozen_table_contract": spec.to_record(),
         "claim_boundary": _CLAIM_BOUNDARY,
     }
-    service: OpenAPISQLService | None = None
     try:
         contract = discover_openapi_contract(
             openapi_root=args.openapi_root,
@@ -70,57 +82,45 @@ def main() -> None:
         payload["openapi_receipts"] = contract.get("receipts", {})
         payload["openapi_tables_status"] = contract.get("openapi_tables_status")
 
-        service = OpenAPISQLService(
-            args.openapi_root,
-            dr_version=args.dr_version,
-            sub_version=args.sub_version,
+        frame, receipt = query_lamost_cone(
+            args.conesearch_endpoint,
+            ra_deg=10.0004738,
+            dec_deg=40.9952444,
+            radius_deg=0.01,
             timeout=args.timeout,
-            diagnostic_error_details=True,
         )
-        payload["sql_endpoint"] = service.endpoint
-        columns = ", ".join(spec.selected_columns)
-        query = (
-            f"SELECT TOP 1 {columns} FROM {spec.table_name} "
-            f"WHERE {spec.gaia_source_id_column} IS NOT NULL"
-        )
-        frame = service.run_sync(query, maxrec=1)
-        lowered = {str(column).lower(): str(column) for column in frame.columns}
-        missing = sorted(
-            column for column in spec.selected_columns if column.lower() not in lowered
-        )
+        returned = {str(column).lower() for column in frame.columns}
+        required = {column.lower() for column in spec.selected_columns}
+        missing = sorted(required - returned)
         if missing:
-            raise RuntimeError(f"stellar contract missing columns: {missing}")
-        if len(frame) != 1:
+            raise RuntimeError(f"ConeSearch contract missing columns: {missing}")
+        if frame.empty:
+            raise RuntimeError("official example cone returned no rows")
+
+        identity_column = spec.gaia_source_id_column.lower()
+        exact_identity_rows = 0
+        for value in frame[identity_column]:
+            text = _identity_text(value)
+            if re.fullmatch(r"[0-9]+", text):
+                exact_identity_rows += 1
+        if exact_identity_rows < 1:
             raise RuntimeError(
-                f"stellar contract probe expected one row and received {len(frame)}"
+                "ConeSearch returned no Gaia DR3 identifiers serialized as exact digits"
             )
-        raw_identity = frame.iloc[0][lowered[spec.gaia_source_id_column.lower()]]
-        identity_text = str(raw_identity).strip()
-        if not isinstance(raw_identity, str):
-            raise RuntimeError(
-                "gaia_source_id was not serialized as character data by OpenAPI"
-            )
-        if re.fullmatch(r"[0-9]+", identity_text) is None:
-            raise RuntimeError("gaia_source_id character value was not exact integer text")
 
         payload.update(
             {
                 "status": "pass",
-                "probe_row_count": 1,
-                "returned_columns": sorted(lowered),
-                "gaia_source_id_serialization": "character_digits",
+                "probe_row_count": int(len(frame)),
+                "returned_columns": sorted(returned),
+                "required_columns_present": True,
+                "exact_gaia_dr3_character_rows_ge_1": True,
                 "source_row_values_persisted": False,
-                "sql_receipts": [
-                    receipt.to_record() for receipt in service.receipts
-                ],
+                "conesearch_receipt": receipt.to_record(),
             }
         )
         _write(args.output, payload)
     except Exception as error:
-        if service is not None:
-            payload["sql_receipts"] = [
-                receipt.to_record() for receipt in service.receipts
-            ]
         payload["status"] = "failure"
         payload["error_type"] = type(error).__name__
         payload["error"] = str(error)[:2_000]
