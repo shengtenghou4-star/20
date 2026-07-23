@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Cross-validate UTC-corrected MEC times with exact FITS DATE-OBS and fill 12/12."""
+"""Build exact candidate timing from first-party FITS DATE-OBS.
+
+LAMOST DR8 LRS defines FITS ``DATE-OBS`` as the median UTC moment of the
+multiple exposures that form a spectrum. The multiple-epoch catalogue (MEC)
+provides a second time coordinate, but live candidate rows can differ from the
+exact FITS header by several integer multiples of 30 seconds. Therefore the
+FITS header is authoritative for orbital phase work; MEC is retained only as an
+independent aggregate and encrypted source-level diagnostic.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
-import io
 import json
 import math
 import re
+import statistics
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,10 +31,11 @@ _DATE_OBS = re.compile(
     r"(?P<hour>[0-2]\d):(?P<minute>[0-5]\d):(?P<second>[0-5]\d)"
     r"(?:\.(?P<fraction>\d+))?$"
 )
+_PUBLIC_MEC_FITS_CEILING_SECONDS = 31.0
 
 
 class HybridTimeError(RuntimeError):
-    pass
+    """Raised when exact identity or first-party FITS timing contracts fail."""
 
 
 @dataclass(frozen=True)
@@ -91,17 +100,19 @@ def load_expected(path: Path) -> dict[str, Identity]:
         if any(name not in mapping for name in required):
             raise HybridTimeError("expected table lacks identity columns")
         for row in reader:
+            if None in row:
+                raise HybridTimeError("expected table row has extra fields")
             obsid = _exact(row[mapping["obsid"]], _EXACT_OBSID, label="obsid")
             if obsid in result:
                 raise HybridTimeError("expected table repeats obsid")
             result[obsid] = Identity(
-                obsid,
-                _exact(
+                obsid=obsid,
+                dr2=_exact(
                     row[mapping["hou_compact_dr2_source_id"]],
                     _EXACT_SOURCE,
                     label="DR2 source",
                 ),
-                _exact(
+                dr3=_exact(
                     row[mapping["hou_compact_dr3_source_id"]],
                     _EXACT_SOURCE,
                     label="DR3 source",
@@ -117,15 +128,18 @@ def load_mec(path: Path, expected: dict[str, Identity]) -> dict[str, TimePoint]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle, strict=True)
         mapping = _headers(reader.fieldnames)
-        for required in (
+        required = (
             "obsid",
             "hou_compact_dr3_source_id",
             "mid_mjd",
             "time_quantisation_half_width_days",
-        ):
-            if required not in mapping:
-                raise HybridTimeError(f"MEC times lack {required}")
+        )
+        for name in required:
+            if name not in mapping:
+                raise HybridTimeError(f"MEC times lack {name}")
         for row in reader:
+            if None in row:
+                raise HybridTimeError("MEC time row has extra fields")
             obsid = _exact(row[mapping["obsid"]], _EXACT_OBSID, label="MEC obsid")
             identity = expected.get(obsid)
             if identity is None:
@@ -140,10 +154,10 @@ def load_mec(path: Path, expected: dict[str, Identity]) -> dict[str, TimePoint]:
             if obsid in result:
                 raise HybridTimeError("MEC time repeats obsid")
             result[obsid] = TimePoint(
-                obsid,
-                source,
-                _finite(row[mapping["mid_mjd"]], label="MEC UTC MJD"),
-                _finite(
+                obsid=obsid,
+                source=source,
+                mjd=_finite(row[mapping["mid_mjd"]], label="MEC UTC MJD"),
+                error_days=_finite(
                     row[mapping["time_quantisation_half_width_days"]],
                     label="MEC timing error",
                     allow_zero=True,
@@ -182,6 +196,8 @@ def load_fits_times(
         if "obsid" not in mapping or "fits_path" not in mapping:
             raise HybridTimeError("FITS manifest lacks columns")
         for row in reader:
+            if None in row:
+                raise HybridTimeError("FITS manifest row has extra fields")
             obsid = _exact(row[mapping["obsid"]], _EXACT_OBSID, label="manifest obsid")
             if obsid not in expected or obsid in paths:
                 raise HybridTimeError("FITS manifest identity contract failed")
@@ -191,6 +207,7 @@ def load_fits_times(
             paths[obsid] = path
     if set(paths) != set(expected):
         raise HybridTimeError("FITS manifest does not cover every expected obsid")
+
     times: dict[str, tuple[float, float, int]] = {}
     for obsid, path in sorted(paths.items()):
         try:
@@ -202,7 +219,9 @@ def load_fits_times(
                 ignore_missing_end=False,
             ) as hdul:
                 header_obsid = _exact(
-                    hdul[0].header.get("OBSID"), _EXACT_OBSID, label="FITS OBSID"
+                    hdul[0].header.get("OBSID"),
+                    _EXACT_OBSID,
+                    label="FITS OBSID",
                 )
                 if header_obsid != obsid:
                     raise HybridTimeError("FITS OBSID mismatch")
@@ -214,6 +233,14 @@ def load_fits_times(
                 f"FITS header read failed: {type(error).__name__}"
             ) from error
     return times, paths
+
+
+def _rounded_histogram(values: list[float], *, quantum: float = 0.1) -> dict[str, int]:
+    counts: Counter[str] = Counter()
+    for value in values:
+        rounded = round(value / quantum) * quantum
+        counts[f"{rounded:.1f}"] += 1
+    return {key: counts[key] for key in sorted(counts, key=float)}
 
 
 def build(
@@ -228,29 +255,37 @@ def build(
     expected = load_expected(expected_path)
     mec = load_mec(mec_path, expected)
     fits_times, _ = load_fits_times(fits_manifest, expected)
-    mismatches = 0
-    maximum_residual = 0.0
+
     crosschecks: list[dict[str, object]] = []
+    residuals: list[float] = []
+    public_contract_mismatches = 0
+    near_30_second_grid = 0
     for obsid, mec_point in sorted(mec.items()):
         fits_mjd, fits_error, _ = fits_times[obsid]
-        residual = abs(mec_point.mjd - fits_mjd)
-        allowed = mec_point.error_days + fits_error + 1e-12
-        maximum_residual = max(maximum_residual, residual * 86400.0)
-        agrees = residual <= allowed
-        mismatches += int(not agrees)
+        residual_seconds = abs(mec_point.mjd - fits_mjd) * 86400.0
+        explicit_allowed_seconds = (
+            mec_point.error_days + fits_error + 1e-12
+        ) * 86400.0
+        within_public_contract = (
+            residual_seconds <= _PUBLIC_MEC_FITS_CEILING_SECONDS + 1e-6
+        )
+        public_contract_mismatches += int(not within_public_contract)
+        nearest_30 = round(residual_seconds / 30.0) * 30.0
+        is_near_30_grid = abs(residual_seconds - nearest_30) <= 0.01
+        near_30_second_grid += int(is_near_30_grid)
+        residuals.append(residual_seconds)
         crosschecks.append(
             {
                 "obsid": obsid,
                 "source_id": mec_point.source,
                 "mec_mjd": mec_point.mjd,
                 "fits_mjd": fits_mjd,
-                "residual_seconds": residual * 86400.0,
-                "allowed_seconds": allowed * 86400.0,
-                "agrees": agrees,
+                "residual_seconds": residual_seconds,
+                "explicit_written_precision_seconds": explicit_allowed_seconds,
+                "within_public_31_second_contract": within_public_contract,
+                "near_integer_30_second_grid": is_near_30_grid,
             }
         )
-    if mismatches:
-        raise HybridTimeError("UTC-corrected MEC and FITS times disagree")
 
     fields = [
         "obsid",
@@ -259,8 +294,10 @@ def build(
         "mid_mjd",
         "time_quantisation_half_width_days",
         "time_source",
-        "mec_crosschecked_with_fits",
+        "mec_available_for_diagnostic",
+        "mec_within_public_31_second_contract",
     ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     sources: set[str] = set()
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields, extrasaction="raise")
@@ -268,66 +305,90 @@ def build(
         for obsid, identity in sorted(expected.items()):
             fits_mjd, fits_error, _ = fits_times[obsid]
             mec_point = mec.get(obsid)
+            within_public_contract: bool | str = ""
             if mec_point is not None:
-                mjd = mec_point.mjd
-                error = mec_point.error_days
-                source = "mec_utc_crosschecked_fits"
-                crosschecked = True
-            else:
-                mjd = fits_mjd
-                error = fits_error
-                source = "fits_date_obs_mec_missing"
-                crosschecked = False
+                residual_seconds = abs(mec_point.mjd - fits_mjd) * 86400.0
+                within_public_contract = (
+                    residual_seconds <= _PUBLIC_MEC_FITS_CEILING_SECONDS + 1e-6
+                )
             sources.add(identity.dr3)
             writer.writerow(
                 {
                     "obsid": obsid,
                     "hou_compact_dr2_source_id": identity.dr2,
                     "hou_compact_dr3_source_id": identity.dr3,
-                    "mid_mjd": format(mjd, ".12f"),
-                    "time_quantisation_half_width_days": format(error, ".16g"),
-                    "time_source": source,
-                    "mec_crosschecked_with_fits": crosschecked,
+                    "mid_mjd": format(fits_mjd, ".12f"),
+                    "time_quantisation_half_width_days": format(fits_error, ".16g"),
+                    "time_source": "fits_date_obs_authoritative",
+                    "mec_available_for_diagnostic": mec_point is not None,
+                    "mec_within_public_31_second_contract": within_public_contract,
                 }
             )
+
     digit_hist = Counter(value[2] for value in fits_times.values())
     private = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "candidate_sensitive": True,
         "status": "success",
         "expected_obsids": len(expected),
         "mec_obsids": len(mec),
         "fits_obsids": len(fits_times),
         "crosschecks": crosschecks,
-        "mec_missing_filled_by_fits": len(expected) - len(mec),
+        "mec_missing_for_diagnostic": len(expected) - len(mec),
         "final_obsids": len(expected),
         "final_sources": len(sources),
+        "authoritative_time_source": "exact-OBSID FITS DATE-OBS",
     }
+    private_receipt_path.parent.mkdir(parents=True, exist_ok=True)
     private_receipt_path.write_text(
         json.dumps(private, indent=2, sort_keys=True), encoding="utf-8"
     )
+
     safe = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "candidate_safe": True,
+        "status": "success",
         "expected_obsids": len(expected),
         "mec_obsids": len(mec),
         "fits_obsids": len(fits_times),
         "mec_fits_crosschecks": len(crosschecks),
-        "mec_fits_crosscheck_mismatches": mismatches,
-        "mec_missing_obsids_filled_by_fits": len(expected) - len(mec),
+        "mec_fits_mismatches_against_public_31_second_contract": (
+            public_contract_mismatches
+        ),
+        "mec_missing_obsids": len(expected) - len(mec),
         "final_obsids": len(expected),
         "final_sources": len(sources),
+        "authoritative_fits_obsids": len(fits_times),
         "fits_date_obs_fractional_second_digits": {
             str(key): digit_hist[key] for key in sorted(digit_hist)
         },
-        "maximum_crosscheck_residual_seconds": maximum_residual,
+        "minimum_crosscheck_residual_seconds": min(residuals, default=0.0),
+        "median_crosscheck_residual_seconds": (
+            statistics.median(residuals) if residuals else 0.0
+        ),
+        "maximum_crosscheck_residual_seconds": max(residuals, default=0.0),
+        "residual_seconds_rounded_0p1_histogram": _rounded_histogram(residuals),
+        "crosschecks_near_integer_30_second_grid": near_30_second_grid,
         "contract": {
-            "mec_coordinate": "UTC MJD after verified subtraction of 480 LMJM minutes",
-            "crosscheck": "absolute residual <= explicit MEC plus FITS half-ULP",
-            "selection": "crosschecked MEC preferred; FITS fills MEC-missing obsids",
+            "authoritative_time": (
+                "exact-OBSID FITS DATE-OBS; official DR8 LRS definition is the "
+                "median UTC moment of the multiple exposures"
+            ),
+            "mec_role": (
+                "independent data-quality diagnostic only; not used for orbital phase "
+                "when it disagrees with the exact FITS header"
+            ),
+            "public_non_candidate_mec_fits_contract_seconds": (
+                _PUBLIC_MEC_FITS_CEILING_SECONDS
+            ),
+            "selection": "FITS DATE-OBS for all 12 exact obsids",
         },
-        "claim_boundary": "Exact hybrid timing only; no companion classification.",
+        "claim_boundary": (
+            "Exact first-party FITS timing with aggregate MEC diagnostics only; "
+            "no companion classification."
+        ),
     }
+    safe_summary_path.parent.mkdir(parents=True, exist_ok=True)
     safe_summary_path.write_text(
         json.dumps(safe, indent=2, sort_keys=True), encoding="utf-8"
     )
