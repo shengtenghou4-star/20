@@ -1,19 +1,13 @@
 name: dark668-desi-dr1-contract
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/desi_dr1.py"
-      - "scripts/probe_desi_dr1_mws_tap.py"
-      - "tests/test_desi_dr1.py"
-      - ".github/workflows/dark668-desi-dr1-contract.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-desi-dr1-contract-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-desi-dr1-contract-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
