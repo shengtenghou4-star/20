@@ -1,8 +1,8 @@
 """Direct anonymous LAMOST search-form queries by exact Gaia DR3 source ID.
 
-LAMOST DR8 v2.0 exposes a public ``gaiasourcearea`` list constraint.  This
+LAMOST DR8 v2.0 exposes a public ``gaiasourcearea`` list constraint. This
 module builds that form payload without coordinates, so the database can use
-its native Gaia-ID index rather than evaluating many positional cones.  Source
+its native Gaia-ID index rather than evaluating many positional cones. Source
 IDs and returned rows remain source-level research data and must be encrypted
 before persistence.
 """
@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 import hashlib
 from typing import Iterable
 
+import numpy as np
 import pandas as pd
 
 from hou_compact.lamost import parse_exact_int_text
@@ -32,6 +33,15 @@ _OUTPUT_COLUMNS = (
     "fibermask",
     "class",
     "subclass",
+)
+_NUMERIC_MEASUREMENT_COLUMNS = (
+    "mjd",
+    "rv",
+    "rv_err",
+    "snrg",
+    "snri",
+    "snrz",
+    "fibermask",
 )
 
 
@@ -82,6 +92,14 @@ def build_gaia_id_form_fields(source_ids: Iterable[object]) -> list[tuple[str, o
     return fields
 
 
+def _plain_float_series(series: pd.Series) -> pd.Series:
+    """Convert nullable numeric values to float64 with ordinary NaN missingness."""
+
+    numeric = pd.to_numeric(series, errors="coerce")
+    values = numeric.to_numpy(dtype="float64", na_value=np.nan)
+    return pd.Series(values, index=series.index, dtype="float64")
+
+
 def normalize_form_table(body: bytes) -> pd.DataFrame:
     """Parse a LAMOST delimited response into the frozen output-column contract."""
 
@@ -95,6 +113,8 @@ def normalize_form_table(body: bytes) -> pd.DataFrame:
     for column in _OUTPUT_COLUMNS:
         source = resolved[column]
         output[column] = raw[source] if source is not None else pd.NA
+    for column in _NUMERIC_MEASUREMENT_COLUMNS:
+        output[column] = _plain_float_series(output[column])
     return output
 
 
@@ -109,7 +129,9 @@ def standardize_gaia_id_response(
     raw = normalize_form_table(body)
     epochs = standardize_exact_rows(raw, set(normalized)).copy()
     if not epochs.empty:
-        epochs["source_match_mode"] = "exact_gaia_dr3_character_id_direct_form_constraint"
+        epochs["source_match_mode"] = (
+            "exact_gaia_dr3_character_id_direct_form_constraint"
+        )
     receipt = GaiaIDFormReceipt(
         input_target_count=len(normalized),
         returned_row_count=len(raw),
