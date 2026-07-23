@@ -1,21 +1,13 @@
 name: dark668-gaia-bridge
 
 on:
-  pull_request:
-    paths:
-      - "src/hou_compact/dark668.py"
-      - "scripts/acquire_dark668_catalogues.py"
-      - "scripts/prepare_dark668_seed.py"
-      - "scripts/query_gaia_dr2_bridge.py"
-      - "tests/test_dark668_seed.py"
-      - ".github/workflows/dark668-gaia-bridge.yml"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: dark668-gaia-bridge-${{ github.event.pull_request.number || github.ref }}
+  group: dark668-gaia-bridge-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
