@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
 import pandas as pd
 
 from hou_compact.dark668_dynamics import score_dynamical_consistency
-from scripts.score_dark668_keplerian import (
-    ensure_dynamics_input_schema,
-    normalize_circular_score_schema,
-)
+
+_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_dark668_keplerian.py"
+_SPEC = importlib.util.spec_from_file_location("dark668_keplerian_cli", _SCRIPT)
+assert _SPEC is not None and _SPEC.loader is not None
+_MODULE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MODULE)
+ensure_dynamics_input_schema = _MODULE.ensure_dynamics_input_schema
+normalize_circular_score_schema = _MODULE.normalize_circular_score_schema
 
 
 def test_all_unscored_period_table_is_a_valid_kepler_input() -> None:
