@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Query exact Dark-668 LAMOST multiple-epoch rows through bounded TAP GET."""
+"""Query exact Dark-668 LAMOST multiple-epoch rows through OpenAPI SQL."""
 
 from __future__ import annotations
 
@@ -15,8 +15,7 @@ from hou_compact.lamost import (
     explode_lrs_multiple_epoch_catalog,
     parse_exact_int_text,
 )
-from hou_compact.lamost_openapi import discover_openapi_contract
-from hou_compact.lamost_tap_get import TapGetService
+from hou_compact.lamost_openapi_sql import OpenAPISQLService
 from hou_compact.lamost_tap_mec import (
     candidate_safe_mec_summary,
     discover_mec_table_specs,
@@ -99,9 +98,9 @@ def _explode_unique_rows(
     rows: pd.DataFrame,
     dr2_to_dr3: dict[int, int],
 ) -> tuple[pd.DataFrame, int]:
-    accepted = rows.loc[rows.get("tap_mec_status", pd.Series(dtype=str)).eq(
-        "accepted_unique"
-    )]
+    accepted = rows.loc[
+        rows.get("tap_mec_status", pd.Series(dtype=str)).eq("accepted_unique")
+    ]
     frames: list[pd.DataFrame] = []
     failures = 0
     for row in accepted.to_dict(orient="records"):
@@ -112,7 +111,7 @@ def _explode_unique_rows(
             continue
         epochs["source_id"] = epochs["dr2_source_id"].map(dr2_to_dr3)
         if epochs["source_id"].isna().any():
-            raise RuntimeError("accepted TAP Gaia DR2 ID is absent from bridge map")
+            raise RuntimeError("accepted OpenAPI Gaia DR2 ID is absent from bridge map")
         epochs["source_id"] = epochs["source_id"].astype("int64")
         frames.append(epochs)
     if not frames:
@@ -121,7 +120,7 @@ def _explode_unique_rows(
     duplicate = output.duplicated(["source_id", "obsid"])
     if duplicate.any():
         raise LamostContractError(
-            f"TAP overlap contains {int(duplicate.sum())} duplicate source/obsid rows"
+            f"OpenAPI overlap contains {int(duplicate.sum())} duplicate source/obsid rows"
         )
     return output.sort_values(
         ["source_id", "mjd", "obsid"], kind="stable"
@@ -131,17 +130,12 @@ def _explode_unique_rows(
 def main() -> None:
     args = parse_args()
     dr2_to_dr3, bridge_status_counts = _accepted_bridge(args.bridge)
-    contract = discover_openapi_contract(
-        openapi_root=args.openapi_root,
+    service = OpenAPISQLService(
+        args.openapi_root,
         dr_version=args.dr_version,
         sub_version=args.sub_version,
         timeout=args.timeout,
     )
-    tap_urls = [str(value) for value in contract.get("tap_urls", [])]
-    if not tap_urls:
-        raise RuntimeError("LAMOST OpenAPI returned no TAP URL")
-    tap_url = tap_urls[0]
-    service = TapGetService(tap_url, timeout=args.timeout)
     specs = discover_mec_table_specs(service)
     selected = specs[0]
     rows, receipts = query_exact_mec_rows(
@@ -156,14 +150,14 @@ def main() -> None:
     epochs.to_csv(args.output, index=False)
 
     payload = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "bridge_input_sha256": sha256_file(args.bridge),
         "bridge_accepted_source_count": len(dr2_to_dr3),
         "bridge_status_counts": bridge_status_counts,
         "release": f"{args.dr_version}/{args.sub_version}",
-        "tap_url": tap_url,
-        "transport": "bounded_https_get",
+        "sql_endpoint": service.endpoint,
+        "transport": "bounded_openapi_sql_get",
         "selected_table": selected.to_record(),
         "mec_summary": candidate_safe_mec_summary(
             len(dr2_to_dr3), rows, specs, receipts
@@ -174,11 +168,11 @@ def main() -> None:
         ),
         "contract_failure_rows": contract_failures,
         "query_receipts": [receipt.to_record() for receipt in receipts],
-        "transport_receipts": [receipt.to_record() for receipt in service.receipts],
+        "sql_receipts": [receipt.to_record() for receipt in service.receipts],
         "source_level_output_written": True,
         "source_level_output_path": str(args.output),
         "public_commit_policy": (
-            "Never commit or upload plaintext TAP rows or exploded source-level epochs."
+            "Never commit or upload plaintext SQL rows or exploded source-level epochs."
         ),
         "claim_boundary": (
             "Exact Gaia-release-aware LAMOST multiple-epoch coverage only. No orbit, "
