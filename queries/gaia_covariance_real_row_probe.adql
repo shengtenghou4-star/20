@@ -24,7 +24,5 @@ WHERE n.nss_solution_type IN ('SB1', 'SB1C')
   AND n.semi_amplitude_primary > 0
   AND n.semi_amplitude_primary_error IS NOT NULL
   AND n.semi_amplitude_primary_error > 0
-  AND n.significance IS NOT NULL
-  AND n.significance >= 5
-ORDER BY n.period * n.semi_amplitude_primary * n.semi_amplitude_primary
-    * n.semi_amplitude_primary DESC
+  AND n.bit_index IS NOT NULL
+  AND n.corr_vec IS NOT NULL
