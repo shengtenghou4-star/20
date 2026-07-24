@@ -24,21 +24,27 @@ from hou_compact.reference_covariance import compare_with_nsstools  # noqa: E402
 
 _FAKE_SOURCE = "1234567890123456789"
 _LONG_INTEGER = re.compile(r"(?<![0-9])[0-9]{10,20}(?![0-9])")
-_CANDIDATE_FIELDS = (
+_PRODUCTION_CANDIDATE_FIELDS = (
     "source_id",
     "nss_solution_type",
     "period",
-    "period_error",
+    "gaia_ref_epoch",
     "t_periastron",
-    "t_periastron_error",
     "eccentricity",
-    "eccentricity_error",
     "arg_periastron",
-    "arg_periastron_error",
-    "center_of_mass_velocity",
-    "center_of_mass_velocity_error",
     "semi_amplitude_primary",
-    "semi_amplitude_primary_error",
+    "mass_flame",
+    "mass_flame_lower",
+    "mass_flame_upper",
+    "flags_flame",
+)
+_LIVE_SCALAR_FIELDS = (
+    "nss_solution_type",
+    "period",
+    "t_periastron",
+    "eccentricity",
+    "arg_periastron",
+    "semi_amplitude_primary",
 )
 
 
@@ -67,7 +73,7 @@ def run_probe(gaia_ecsv: Path) -> dict[str, object]:
     if len(table) != 1:
         raise RuntimeError(f"expected exactly one Gaia row, received {len(table)}")
     available = {str(name).strip().lower(): str(name) for name in table.colnames}
-    missing = sorted(set(_CANDIDATE_FIELDS[1:]) - set(available))
+    missing = sorted(set(_LIVE_SCALAR_FIELDS) - set(available))
     if missing:
         raise RuntimeError(f"live probe row lacks fields: {missing}")
 
@@ -78,18 +84,30 @@ def run_probe(gaia_ecsv: Path) -> dict[str, object]:
         probe_ecsv = directory / "probe.ecsv"
         deidentified.write(probe_ecsv, format="ascii.ecsv", overwrite=True)
 
-        candidate_csv = directory / "candidate.csv"
+        # Reproduce the exact sparse candidate table emitted by
+        # phase_followup_pipeline.prepare_candidates before either post-command hook runs.
         row = table[0]
-        candidate: dict[str, str] = {"source_id": _FAKE_SOURCE}
-        for field in _CANDIDATE_FIELDS[1:]:
+        candidate: dict[str, str] = {
+            "source_id": _FAKE_SOURCE,
+            "gaia_ref_epoch": "2016.0",
+            "mass_flame": "1.0",
+            "mass_flame_lower": "0.9",
+            "mass_flame_upper": "1.1",
+            "flags_flame": "0",
+        }
+        for field in _LIVE_SCALAR_FIELDS:
             candidate[field] = _scalar_text(row[available[field]])
+
+        candidate_csv = directory / "candidate.csv"
         with candidate_csv.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=list(_CANDIDATE_FIELDS))
+            writer = csv.DictWriter(
+                handle,
+                fieldnames=list(_PRODUCTION_CANDIDATE_FIELDS),
+                extrasaction="raise",
+            )
             writer.writeheader()
             writer.writerow(candidate)
 
-        # Match the production sitecustomize hook exactly: the quality/error/radius
-        # enrichment runs first, then the array-valued covariance enrichment.
         quality_enrichment = augment_candidate_gaia(
             gaia_ecsv=probe_ecsv,
             candidate_gaia=candidate_csv,
@@ -99,17 +117,39 @@ def run_probe(gaia_ecsv: Path) -> dict[str, object]:
             candidate_gaia=candidate_csv,
         )
         with candidate_csv.open("r", encoding="utf-8", newline="") as handle:
-            enriched = next(csv.DictReader(handle))
+            reader = csv.DictReader(handle, strict=True)
+            final_fields = list(reader.fieldnames or [])
+            enriched = next(reader)
         vector = coerce_correlation_vector(enriched["corr_vec"])
         comparison = compare_with_nsstools(enriched)
+
+    expected_appended = {
+        "period_error",
+        "eccentricity_error",
+        "semi_amplitude_primary_error",
+        "bit_index",
+        "corr_vec",
+        "center_of_mass_velocity",
+        "center_of_mass_velocity_error",
+        "t_periastron_error",
+        "arg_periastron_error",
+    }
+    missing_after_enrichment = sorted(expected_appended - set(final_fields))
+    if missing_after_enrichment:
+        raise RuntimeError(
+            f"production enrichment sequence omitted fields: {missing_after_enrichment}"
+        )
 
     return {
         "candidate_safe": True,
         "status": "success",
         "rows_tested": 1,
         "identity_replaced_before_contract": True,
+        "exact_sparse_production_schema_reproduced": True,
         "production_enrichment_order_reproduced": True,
         "solution_type": str(enriched["nss_solution_type"]),
+        "initial_field_count": len(_PRODUCTION_CANDIDATE_FIELDS),
+        "final_field_count": len(final_fields),
         "corr_vec_raw_length": int(vector.size),
         "corr_vec_finite_entries": int(np.count_nonzero(np.isfinite(vector))),
         "corr_vec_nonzero_entries": int(
