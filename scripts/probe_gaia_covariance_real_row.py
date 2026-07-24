@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the covariance enrichment/parity contract on one de-identified live Gaia row."""
+"""Run the production enrichment/parity sequence on one de-identified live Gaia row."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from astropy.table import Table
 CAPSULE = Path(__file__).resolve().parents[1] / "capsules" / "hou_compact_final" / "hou_compact"
 sys.path.insert(0, str(CAPSULE))
 
+from gaia_candidate_vetting import augment_candidate_gaia  # noqa: E402
 from gaia_covariance_enrichment import augment_candidate_covariance_fields  # noqa: E402
 from hou_compact.gaia_covariance import coerce_correlation_vector  # noqa: E402
 from hou_compact.reference_covariance import compare_with_nsstools  # noqa: E402
@@ -87,7 +88,13 @@ def run_probe(gaia_ecsv: Path) -> dict[str, object]:
             writer.writeheader()
             writer.writerow(candidate)
 
-        enrichment = augment_candidate_covariance_fields(
+        # Match the production sitecustomize hook exactly: the quality/error/radius
+        # enrichment runs first, then the array-valued covariance enrichment.
+        quality_enrichment = augment_candidate_gaia(
+            gaia_ecsv=probe_ecsv,
+            candidate_gaia=candidate_csv,
+        )
+        covariance_enrichment = augment_candidate_covariance_fields(
             gaia_ecsv=probe_ecsv,
             candidate_gaia=candidate_csv,
         )
@@ -101,12 +108,15 @@ def run_probe(gaia_ecsv: Path) -> dict[str, object]:
         "status": "success",
         "rows_tested": 1,
         "identity_replaced_before_contract": True,
+        "production_enrichment_order_reproduced": True,
+        "solution_type": str(enriched["nss_solution_type"]),
         "corr_vec_raw_length": int(vector.size),
         "corr_vec_finite_entries": int(np.count_nonzero(np.isfinite(vector))),
         "corr_vec_nonzero_entries": int(
             np.count_nonzero(np.isfinite(vector) & (vector != 0.0))
         ),
-        "enrichment_schema_version": enrichment["schema_version"],
+        "quality_fields_appended": int(quality_enrichment["fields_appended"]),
+        "covariance_enrichment_schema_version": covariance_enrichment["schema_version"],
         "decoding_mode": comparison.decoding_mode,
         "coefficient_count": comparison.coefficient_count,
         "dpac_parity_max_abs_difference": comparison.maximum_absolute_difference,
