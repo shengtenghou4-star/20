@@ -31,7 +31,7 @@ jobs:
       - name: Install TAP client
         run: python -m pip install 'pyvo>=1.5' 'astropy>=6.1'
 
-      - name: Probe minimal and frozen-query Gaia AIP contracts
+      - name: Probe queue and frozen-query Gaia AIP contracts
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -44,7 +44,7 @@ jobs:
           stage = 'initialization'
           remote_jobs = []
           receipt = {
-              'schema_version': '1.2',
+              'schema_version': '1.3',
               'candidate_safe': True,
               'tap_service': 'Gaia@AIP',
               'anonymous_access': True,
@@ -65,7 +65,6 @@ jobs:
           try:
               service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
 
-              stage = 'minimal_sync_schema'
               minimal_query = '''
               SELECT TOP 1
                   source_id,
@@ -78,6 +77,8 @@ jobs:
                 AND corr_vec IS NOT NULL
               '''
               minimal_required = {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'}
+
+              stage = 'minimal_sync_schema'
               sync_result = service.run_sync(minimal_query, maxrec=1).to_table()
               assert len(sync_result) == 1
               assert minimal_required <= {
@@ -85,15 +86,27 @@ jobs:
               }
 
               stage = 'minimal_async_30s'
-              minimal_async = run_async(
+              minimal_30s = run_async(
                   service,
                   minimal_query,
                   queue='30s',
                   timeout=180,
               )
-              assert len(minimal_async) == 1
+              assert len(minimal_30s) == 1
               assert minimal_required <= {
-                  str(name).lower() for name in minimal_async.colnames
+                  str(name).lower() for name in minimal_30s.colnames
+              }
+
+              stage = 'minimal_async_2h'
+              minimal_2h = run_async(
+                  service,
+                  minimal_query,
+                  queue='2h',
+                  timeout=180,
+              )
+              assert len(minimal_2h) == 1
+              assert minimal_required <= {
+                  str(name).lower() for name in minimal_2h.colnames
               }
 
               stage = 'frozen_v9_query_contract'
@@ -115,11 +128,11 @@ jobs:
                   'pk1_cubed_proxy',
               }
 
-              stage = 'frozen_v9_async_2h'
+              stage = 'frozen_v9_async_5m'
               frozen_result = run_async(
                   service,
                   frozen_probe,
-                  queue='2h',
+                  queue='5m',
                   timeout=600,
               )
               assert len(frozen_result) == 1
@@ -130,10 +143,9 @@ jobs:
               receipt.update({
                   'status': 'success',
                   'minimal_sync_success': True,
-                  'minimal_async_success': True,
-                  'minimal_async_queue': '30s',
-                  'frozen_v9_async_success': True,
-                  'frozen_v9_async_queue': '2h',
+                  'minimal_async_30s_success': True,
+                  'minimal_async_2h_success': True,
+                  'frozen_v9_async_5m_success': True,
                   'frozen_v9_query_shape_preserved': True,
                   'frozen_v9_row_limit_only_changed_to_one': True,
                   'required_columns_present': True,
