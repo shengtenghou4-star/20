@@ -15,7 +15,7 @@ permissions:
 jobs:
   real-corrvec-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     env:
       PYTHONPATH: capsules/hou_compact_final/hou_compact:src
     steps:
@@ -31,24 +31,102 @@ jobs:
       - name: Install covariance and DPAC reference dependencies
         run: python -m pip install -e '.[reference]'
 
-      - name: Query exactly one live Gaia covariance row
+      - name: Query exactly one live Gaia covariance row with retries
+        id: gaia_query
         run: |
-          python scripts/run_gaia_query.py \
-            --query queries/gaia_covariance_real_row_probe.adql \
-            --output gaia_covariance_probe.ecsv \
-            --overwrite
+          set +e
+          : > gaia_query.log
+          ok=0
+          for attempt in 1 2 3; do
+            rm -f gaia_covariance_probe.ecsv gaia_covariance_probe.ecsv.manifest.json
+            printf 'attempt=%s\n' "$attempt" >> gaia_query.log
+            python scripts/run_gaia_query.py \
+              --query queries/gaia_covariance_real_row_probe.adql \
+              --output gaia_covariance_probe.ecsv \
+              --overwrite >> gaia_query.log 2>&1
+            code=$?
+            if test "$code" = 0 && test -s gaia_covariance_probe.ecsv; then
+              ok=1
+              break
+            fi
+            printf 'exit_code=%s\n' "$code" >> gaia_query.log
+            sleep $((attempt * 10))
+          done
+          printf '%s\n' "$ok" > gaia_query.status
+          exit 0
 
       - name: Replace identity and exercise exact enrichment plus DPAC parity
+        id: contract_probe
         run: |
+          set +e
+          if test "$(cat gaia_query.status)" != 1; then
+            python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          text = Path('gaia_query.log').read_text(encoding='utf-8', errors='replace')
+          tail = text.splitlines()[-40:]
+          sanitized = []
+          for line in tail:
+              line = re.sub(r'(?<![0-9])[0-9]{10,20}(?![0-9])', '<redacted-id>', line)
+              line = re.sub(r'https?://\S+', '<redacted-url>', line)
+              sanitized.append(line[:500])
+          receipt = {
+              'candidate_safe': True,
+              'status': 'failure',
+              'stage': 'gaia_query',
+              'error_type': 'live_query_failed_after_retries',
+              'sanitized_log_tail': sanitized,
+          }
+          Path('candidate_safe_corrvec_probe.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          PY
+            exit 0
+          fi
           python scripts/probe_gaia_covariance_real_row.py \
             gaia_covariance_probe.ecsv \
-            --output candidate_safe_corrvec_probe.json
+            --output candidate_safe_corrvec_probe.json \
+            > probe_contract.log 2>&1
+          code=$?
+          if test "$code" != 0; then
+            python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+          text = Path('probe_contract.log').read_text(encoding='utf-8', errors='replace')
+          tail = text.splitlines()[-60:]
+          sanitized = []
+          for line in tail:
+              line = re.sub(r'(?<![0-9])[0-9]{10,20}(?![0-9])', '<redacted-id>', line)
+              line = re.sub(r'https?://\S+', '<redacted-url>', line)
+              sanitized.append(line[:500])
+          receipt = {
+              'candidate_safe': True,
+              'status': 'failure',
+              'stage': 'corrvec_contract',
+              'error_type': 'real_row_contract_failed',
+              'sanitized_log_tail': sanitized,
+          }
+          Path('candidate_safe_corrvec_probe.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True), encoding='utf-8'
+          )
+          PY
+          fi
+          exit 0
 
       - name: Publish candidate-safe probe receipt
         if: always()
         run: |
-          if test -s candidate_safe_corrvec_probe.json; then
-            cat candidate_safe_corrvec_probe.json
-          else
-            printf '%s\n' '{"candidate_safe":true,"status":"failure","error_type":"probe_receipt_missing"}'
-          fi
+          test -s candidate_safe_corrvec_probe.json
+          cat candidate_safe_corrvec_probe.json
+
+      - name: Preserve probe failure after safe receipt
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          data = json.load(open('candidate_safe_corrvec_probe.json', encoding='utf-8'))
+          if data.get('status') != 'success':
+              raise SystemExit(1)
+          PY
