@@ -19,9 +19,11 @@ from gaia_covariance_failclosed import augment_covariance_phase_products  # noqa
 def test_production_python_startup_installs_failclosed_hook(tmp_path: Path) -> None:
     script = tmp_path / "phase_followup_pipeline.py"
     script.write_text(
+        "import os\n"
         "import sitecustomize\n"
         "hook = sitecustomize._AUGMENT_COVARIANCE_PHASE_PRODUCTS\n"
-        "print(hook.__module__)\n",
+        "print(hook.__module__, flush=True)\n"
+        "os._exit(0)\n",
         encoding="utf-8",
     )
     env = dict(os.environ)
