@@ -31,15 +31,18 @@ jobs:
           ./build/cadical --version
           mkdir -p ../artifact-cadical
           cp build/cadical ../artifact-cadical/cadical
+          cp build/libcadical.a ../artifact-cadical/libcadical.a
+          cp src/cadical.hpp ../artifact-cadical/cadical.hpp
+          cp src/ipasir.h ../artifact-cadical/ipasir.h
           cp ../cadical-commit.txt ../artifact-cadical/source-commit.txt
-          sha256sum ../artifact-cadical/cadical | tee ../artifact-cadical/cadical.sha256
+          sha256sum ../artifact-cadical/cadical ../artifact-cadical/libcadical.a ../artifact-cadical/cadical.hpp ../artifact-cadical/ipasir.h | tee ../artifact-cadical/SHA256SUMS
           ldd ../artifact-cadical/cadical | tee ../artifact-cadical/ldd.txt
-          printf '%s\n' 'source=https://github.com/arminbiere/cadical' 'purpose=generic-solver-relay-only' 'trigger=pull-request' > ../artifact-cadical/provenance.txt
+          printf '%s\n' 'source=https://github.com/arminbiere/cadical' 'purpose=generic-solver-and-incremental-library-relay-only' > ../artifact-cadical/provenance.txt
 
       - name: Upload generic solver artifact
         uses: actions/upload-artifact@v4
         with:
-          name: cadical-linux-x86_64
+          name: cadical-incremental-linux-x86_64
           path: artifact-cadical/
           if-no-files-found: error
           retention-days: 1
