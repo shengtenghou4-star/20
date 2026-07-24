@@ -68,14 +68,14 @@ def _flag_value(name: str) -> Path:
     return Path(sys.argv[index + 1])
 
 
-def _safe_error_payload(command: str, error: BaseException) -> dict[str, object]:
+def _safe_error_payload(stage: str, error: BaseException) -> dict[str, object]:
     message = _LONG_INTEGER.sub("<redacted-id>", str(error))
     message = _URL.sub("<redacted-url>", message)
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
         "candidate_safe": True,
         "status": "failure",
-        "stage": command,
+        "stage": stage,
         "error_type": type(error).__name__,
         "error_message": message[:1000],
         "claim_boundary": (
@@ -102,8 +102,8 @@ def _safe_summary_path(command: str) -> Path | None:
         return None
 
 
-def _persist_safe_error(command: str, error: BaseException) -> None:
-    payload = _safe_error_payload(command, error)
+def _persist_safe_error(command: str, stage: str, error: BaseException) -> None:
+    payload = _safe_error_payload(stage, error)
     path = _safe_error_path(command)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -129,6 +129,7 @@ def _persist_safe_error(command: str, error: BaseException) -> None:
 
 def _run_vetting_hook() -> None:
     command = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+    stage = f"{command}_hook_initialization"
     try:
         from gaia_candidate_vetting import (
             augment_candidate_gaia,
@@ -140,10 +141,12 @@ def _run_vetting_hook() -> None:
         if command == "prepare":
             gaia_ecsv = _flag_value("--gaia-ecsv")
             candidate_gaia = _flag_value("--candidate-gaia")
+            stage = "candidate_quality_error_geometry_enrichment"
             augment_candidate_gaia(
                 gaia_ecsv=gaia_ecsv,
                 candidate_gaia=candidate_gaia,
             )
+            stage = "candidate_covariance_array_enrichment"
             augment_candidate_covariance_fields(
                 gaia_ecsv=gaia_ecsv,
                 candidate_gaia=candidate_gaia,
@@ -152,11 +155,13 @@ def _run_vetting_hook() -> None:
             candidate_gaia = _flag_value("--gaia")
             phase_rows = _flag_value("--source-output")
             phase_summary = _flag_value("--summary-output")
+            stage = "candidate_coordinatewise_mass_geometry_vetting"
             augment_phase_products(
                 candidate_gaia=candidate_gaia,
                 phase_rows=phase_rows,
                 phase_summary=phase_summary,
             )
+            stage = "candidate_full_gaia_covariance_vetting"
             augment_covariance_phase_products(
                 candidate_gaia=candidate_gaia,
                 phase_rows=phase_rows,
@@ -164,11 +169,12 @@ def _run_vetting_hook() -> None:
             )
     except BaseException as error:  # fail closed at process boundary
         try:
-            _persist_safe_error(command, error)
+            _persist_safe_error(command, stage, error)
         except BaseException:
             pass
         print(
-            f"HOU-COMPACT post-command vetting failed: {type(error).__name__}: {error}",
+            f"HOU-COMPACT post-command vetting failed at {stage}: "
+            f"{type(error).__name__}: {error}",
             file=sys.stderr,
             flush=True,
         )
