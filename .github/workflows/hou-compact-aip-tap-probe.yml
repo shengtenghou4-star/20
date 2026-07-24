@@ -1,0 +1,82 @@
+name: HOU-COMPACT Gaia AIP de-identified TAP probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/hou-compact-aip-tap-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hou-compact-aip-tap-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  anonymous-aip-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout audited branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install TAP client
+        run: python -m pip install 'pyvo>=1.5' 'astropy>=6.1'
+
+      - name: Query one de-identified Gaia AIP NSS row
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pyvo
+
+          service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
+          query = '''
+          SELECT TOP 1
+              source_id,
+              nss_solution_type,
+              bit_index,
+              corr_vec
+          FROM gaiadr3.nss_two_body_orbit
+          WHERE nss_solution_type IN ('SB1', 'SB1C')
+            AND bit_index IS NOT NULL
+            AND corr_vec IS NOT NULL
+          '''
+          result = service.run_sync(query, maxrec=1).to_table()
+          assert len(result) == 1
+          names = {str(name).lower() for name in result.colnames}
+          assert {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'} <= names
+          receipt = {
+              'schema_version': '1.0',
+              'candidate_safe': True,
+              'status': 'success',
+              'tap_service': 'Gaia@AIP',
+              'anonymous_access': True,
+              'row_count': len(result),
+              'required_columns_present': True,
+              'claim_boundary': (
+                  'Service and schema contract only; no source identifier, row value, '
+                  'coordinate, orbit parameter, covariance value, or candidate identity '
+                  'is printed or persisted.'
+              ),
+          }
+          Path('aip_probe_safe_receipt.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+
+      - name: Upload candidate-safe probe receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: hou-compact-aip-safe-probe-${{ github.run_id }}
+          path: aip_probe_safe_receipt.json
+          if-no-files-found: error
+          retention-days: 14
