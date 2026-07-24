@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - relay/kissat-4.0.4-build-20260725
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -31,7 +34,7 @@ jobs:
           cp ../cadical-commit.txt ../artifact-cadical/source-commit.txt
           sha256sum ../artifact-cadical/cadical | tee ../artifact-cadical/cadical.sha256
           ldd ../artifact-cadical/cadical | tee ../artifact-cadical/ldd.txt
-          printf '%s\n' 'source=https://github.com/arminbiere/cadical' 'purpose=generic-solver-relay-only' 'trigger=second-push' > ../artifact-cadical/provenance.txt
+          printf '%s\n' 'source=https://github.com/arminbiere/cadical' 'purpose=generic-solver-relay-only' 'trigger=pull-request' > ../artifact-cadical/provenance.txt
 
       - name: Upload generic solver artifact
         uses: actions/upload-artifact@v4
