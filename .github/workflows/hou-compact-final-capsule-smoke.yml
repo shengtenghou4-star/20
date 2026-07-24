@@ -42,11 +42,55 @@ jobs:
             -s capsules/hou_compact_final/tests \
             -p 'test_final_capsule.py' -v \
             2>&1 | tee final_capsule_smoke.log
-      - name: Upload candidate-safe smoke log
+      - name: Probe anonymous Gaia AIP TAP contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import pyvo
+
+          service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
+          query = '''
+          SELECT TOP 1
+              source_id,
+              nss_solution_type,
+              bit_index,
+              corr_vec
+          FROM gaiadr3.nss_two_body_orbit
+          WHERE nss_solution_type IN ('SB1', 'SB1C')
+            AND bit_index IS NOT NULL
+            AND corr_vec IS NOT NULL
+          '''
+          result = service.run_sync(query, maxrec=1).to_table()
+          assert len(result) == 1
+          names = {str(name).lower() for name in result.colnames}
+          assert {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'} <= names
+          receipt = {
+              'schema_version': '1.0',
+              'candidate_safe': True,
+              'status': 'success',
+              'tap_service': 'Gaia@AIP',
+              'anonymous_access': True,
+              'row_count': len(result),
+              'required_columns_present': True,
+              'claim_boundary': (
+                  'Service and schema contract only; no source identifier, row value, '
+                  'coordinate, orbit parameter, covariance value, or candidate identity '
+                  'is printed or persisted.'
+              ),
+          }
+          Path('aip_probe_safe_receipt.json').write_text(
+              json.dumps(receipt, indent=2, sort_keys=True), encoding='utf-8')
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+      - name: Upload candidate-safe smoke receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hou-compact-final-capsule-smoke-${{ github.run_id }}
-          path: final_capsule_smoke.log
+          path: |
+            final_capsule_smoke.log
+            aip_probe_safe_receipt.json
           if-no-files-found: warn
           retention-days: 14
