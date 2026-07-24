@@ -1,0 +1,28 @@
+SELECT TOP 1
+    n.source_id,
+    n.nss_solution_type,
+    n.period,
+    n.period_error,
+    n.t_periastron,
+    n.t_periastron_error,
+    n.eccentricity,
+    n.eccentricity_error,
+    n.arg_periastron,
+    n.arg_periastron_error,
+    n.center_of_mass_velocity,
+    n.center_of_mass_velocity_error,
+    n.semi_amplitude_primary,
+    n.semi_amplitude_primary_error,
+    n.bit_index,
+    n.corr_vec
+FROM gaiadr3.nss_two_body_orbit AS n
+WHERE n.nss_solution_type IN ('SB1', 'SB1C')
+  AND n.period IS NOT NULL
+  AND n.period > 0
+  AND n.period_error IS NOT NULL
+  AND n.semi_amplitude_primary IS NOT NULL
+  AND n.semi_amplitude_primary > 0
+  AND n.semi_amplitude_primary_error IS NOT NULL
+  AND n.semi_amplitude_primary_error > 0
+  AND n.bit_index IS NOT NULL
+  AND n.corr_vec IS NOT NULL
