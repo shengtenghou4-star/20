@@ -3,8 +3,10 @@
 The JSON adapter preserves compatibility with two legacy hybrid-time workflow keys
 without altering the real MEC diagnostic count. The command hooks enrich the exact
 candidate Gaia table after ``prepare`` and append one-sigma geometry plus formal Gaia
-covariance mass vetting after ``validate``. Any hook failure terminates the Python
-process non-zero; source-level products remain ephemeral and encrypted by the workflow.
+covariance mass vetting after ``validate``. Hook dependencies are loaded while the
+interpreter is fully alive, so the post-command hook runs before dependency shutdown
+handlers. Any hook failure terminates the Python process non-zero; source-level products
+remain ephemeral and encrypted by the workflow.
 """
 
 from __future__ import annotations
@@ -15,11 +17,18 @@ import os
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Callable
 
 _ORIGINAL_LOAD = _json.load
 _LONG_INTEGER = re.compile(r"(?<![0-9])[0-9]{10,20}(?![0-9])")
 _URL = re.compile(r"https?://\S+")
+
+_VETTING_COMMAND: str | None = None
+_VETTING_IMPORT_ERROR: BaseException | None = None
+_AUGMENT_CANDIDATE_GAIA: Callable[..., object] | None = None
+_AUGMENT_PHASE_PRODUCTS: Callable[..., object] | None = None
+_AUGMENT_CANDIDATE_COVARIANCE_FIELDS: Callable[..., object] | None = None
+_AUGMENT_COVARIANCE_PHASE_PRODUCTS: Callable[..., object] | None = None
 
 
 def _is_fits_authoritative_hybrid(data: object) -> bool:
@@ -76,7 +85,7 @@ def _flag_value(name: str) -> Path:
 
 def _safe_error_payload(stage: str, error: BaseException) -> dict[str, object]:
     return {
-        "schema_version": "0.2",
+        "schema_version": "0.3",
         "candidate_safe": True,
         "status": "failure",
         "stage": stage,
@@ -133,16 +142,36 @@ def _persist_safe_error(command: str, stage: str, error: BaseException) -> None:
     )
 
 
+def _required_hook(name: str, value: Callable[..., object] | None) -> Callable[..., object]:
+    if value is None:
+        raise RuntimeError(f"vetting dependency {name} was not initialized")
+    return value
+
+
 def _run_vetting_hook() -> None:
-    command = sys.argv[1] if len(sys.argv) > 1 else "unknown"
+    command = _VETTING_COMMAND or (sys.argv[1] if len(sys.argv) > 1 else "unknown")
     stage = f"{command}_hook_initialization"
     try:
-        from gaia_candidate_vetting import (
-            augment_candidate_gaia,
-            augment_phase_products,
+        if _VETTING_IMPORT_ERROR is not None:
+            raise RuntimeError(
+                "post-command vetting dependencies failed to initialize before shutdown: "
+                f"{type(_VETTING_IMPORT_ERROR).__name__}: {_VETTING_IMPORT_ERROR}"
+            ) from _VETTING_IMPORT_ERROR
+
+        augment_candidate_gaia = _required_hook(
+            "augment_candidate_gaia", _AUGMENT_CANDIDATE_GAIA
         )
-        from gaia_covariance_enrichment import augment_candidate_covariance_fields
-        from gaia_covariance_vetting import augment_covariance_phase_products
+        augment_phase_products = _required_hook(
+            "augment_phase_products", _AUGMENT_PHASE_PRODUCTS
+        )
+        augment_candidate_covariance_fields = _required_hook(
+            "augment_candidate_covariance_fields",
+            _AUGMENT_CANDIDATE_COVARIANCE_FIELDS,
+        )
+        augment_covariance_phase_products = _required_hook(
+            "augment_covariance_phase_products",
+            _AUGMENT_COVARIANCE_PHASE_PRODUCTS,
+        )
 
         if command == "prepare":
             gaia_ecsv = _flag_value("--gaia-ecsv")
@@ -303,11 +332,38 @@ def _inject_external_stage_failures() -> None:
     )
 
 
-if (
-    Path(sys.argv[0]).name == "phase_followup_pipeline.py"
-    and len(sys.argv) > 1
-    and sys.argv[1] in {"prepare", "validate"}
-):
+def _is_vetting_command() -> bool:
+    return bool(
+        Path(sys.argv[0]).name == "phase_followup_pipeline.py"
+        and len(sys.argv) > 1
+        and sys.argv[1] in {"prepare", "validate"}
+    )
+
+
+if _is_vetting_command():
+    _VETTING_COMMAND = sys.argv[1]
+    try:
+        from gaia_candidate_vetting import (
+            augment_candidate_gaia as _loaded_augment_candidate_gaia,
+            augment_phase_products as _loaded_augment_phase_products,
+        )
+        from gaia_covariance_enrichment import (
+            augment_candidate_covariance_fields as _loaded_augment_candidate_covariance_fields,
+        )
+        from gaia_covariance_vetting import (
+            augment_covariance_phase_products as _loaded_augment_covariance_phase_products,
+        )
+
+        _AUGMENT_CANDIDATE_GAIA = _loaded_augment_candidate_gaia
+        _AUGMENT_PHASE_PRODUCTS = _loaded_augment_phase_products
+        _AUGMENT_CANDIDATE_COVARIANCE_FIELDS = (
+            _loaded_augment_candidate_covariance_fields
+        )
+        _AUGMENT_COVARIANCE_PHASE_PRODUCTS = (
+            _loaded_augment_covariance_phase_products
+        )
+    except BaseException as error:
+        _VETTING_IMPORT_ERROR = error
     atexit.register(_run_vetting_hook)
 
 if "GAIA_OUTCOME" in os.environ and "BRIDGE_OUTCOME" in os.environ:
