@@ -1,9 +1,10 @@
 """Fail-closed Gaia TAP provider fallback for the frozen HOU-COMPACT cohort.
 
 The ESA archive remains authoritative and is always attempted first. Gaia@AIP is used
-only when the ESA anonymous account explicitly rejects the job because its shared
-filesystem quota is exhausted. Query text, ordering, row limit, output format, and all
-downstream scientific gates remain unchanged.
+only for an explicit ESA anonymous-filesystem quota rejection or the equivalent generic
+HTTP-400 ``DALServiceError`` currently emitted when ESA suppresses that rejection body.
+Query text, ordering, row limit, output format, and all downstream scientific gates remain
+unchanged. The mirror result is never accepted merely because the primary provider failed.
 """
 
 from __future__ import annotations
@@ -39,25 +40,66 @@ _QUOTA_TOKENS = (
     "anonymous",
     "allowed value",
 )
+_GENERIC_ESA_400_TOKENS = (
+    "400 client error",
+    "bad request",
+)
+_EXPLICIT_QUOTA_TRIGGER = "esa_anonymous_filesystem_quota"
+_GENERIC_ESA_400_TRIGGER = "esa_dalservice_http_400"
 
 
-def _failure_manifest_message(output_path: Path) -> str:
+def _failure_manifest_payload(output_path: Path) -> dict[str, object]:
     path = failure_manifest_path(output_path)
     if not path.exists() or path.stat().st_size == 0:
-        return ""
+        return {}
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return ""
-    if not isinstance(payload, dict):
-        return ""
-    return str(payload.get("error_message", ""))
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _failure_manifest_message(output_path: Path) -> str:
+    return str(_failure_manifest_payload(output_path).get("error_message", ""))
+
+
+def _failure_manifest_error_type(output_path: Path) -> str:
+    return str(_failure_manifest_payload(output_path).get("error_type", ""))
+
+
+def classify_esa_fallback_failure(
+    error: BaseException,
+    output_path: Path,
+) -> str | None:
+    """Return the narrow provider-fallback trigger, or ``None`` to fail closed.
+
+    ESA sometimes returns the full anonymous-filesystem quota message and sometimes
+    collapses the same submission rejection to a generic HTTP-400 ``DALServiceError``.
+    The latter is eligible only when both the exception/failure manifest identify the
+    PyVO service-error type and the message has the exact 400/Bad Request shape. This does
+    not catch local validation errors, arbitrary runtime failures, HTTP 5xx, timeouts, or
+    malformed UWS responses.
+    """
+    manifest_message = _failure_manifest_message(output_path)
+    message = " ".join((str(error), manifest_message)).lower()
+    if all(token in message for token in _QUOTA_TOKENS):
+        return _EXPLICIT_QUOTA_TRIGGER
+
+    error_types = {
+        type(error).__name__.strip().lower(),
+        _failure_manifest_error_type(output_path).strip().lower(),
+    }
+    if (
+        "dalserviceerror" in error_types
+        and all(token in message for token in _GENERIC_ESA_400_TOKENS)
+    ):
+        return _GENERIC_ESA_400_TRIGGER
+    return None
 
 
 def is_esa_anonymous_quota_failure(error: BaseException, output_path: Path) -> bool:
     """Return true only for the explicit ESA anonymous-filesystem quota rejection."""
-    message = " ".join((str(error), _failure_manifest_message(output_path))).lower()
-    return all(token in message for token in _QUOTA_TOKENS)
+    return classify_esa_fallback_failure(error, output_path) == _EXPLICIT_QUOTA_TRIGGER
 
 
 def _validate_aip_queue(queue: str) -> str:
@@ -83,6 +125,7 @@ def run_aip_async_query(
     ),
     queue: str = AIP_LONG_QUEUE,
     primary_error_type: str = "unknown",
+    fallback_trigger: str = _EXPLICIT_QUOTA_TRIGGER,
 ) -> dict[str, object]:
     """Run the unchanged frozen query through Gaia@AIP's anonymous async queue."""
     query_path, output_path, query = _prepare_query_paths(
@@ -97,6 +140,11 @@ def run_aip_async_query(
     if fetch_retries < 0:
         raise ValueError("fetch_retries must be non-negative")
     queue = _validate_aip_queue(queue)
+    if fallback_trigger not in {
+        _EXPLICIT_QUOTA_TRIGGER,
+        _GENERIC_ESA_400_TRIGGER,
+    }:
+        raise ValueError(f"unsupported Gaia fallback trigger: {fallback_trigger!r}")
     minimum_http_timeout_seconds = validate_minimum_http_timeout(
         minimum_http_timeout_seconds
     )
@@ -111,7 +159,7 @@ def run_aip_async_query(
         "delete_job": delete_job,
         "service_provider": "Gaia@AIP",
         "async_queue": queue,
-        "fallback_trigger": "esa_anonymous_filesystem_quota",
+        "fallback_trigger": fallback_trigger,
         "primary_error_type": primary_error_type,
         "status_parse_retries_allowed": status_parse_retries,
         "status_parse_retry_backoff_seconds": status_parse_retry_backoff_seconds,
@@ -182,7 +230,7 @@ def run_async_query_with_quota_fallback(
     delete_job: bool = True,
     minimum_http_timeout_seconds: float = DEFAULT_MINIMUM_HTTP_TIMEOUT_SECONDS,
 ) -> dict[str, object]:
-    """Run ESA first and fall back only on its explicit anonymous quota rejection."""
+    """Run ESA first and use AIP only for a narrowly classified provider rejection."""
     try:
         return run_async_query(
             query_path,
@@ -196,7 +244,8 @@ def run_async_query_with_quota_fallback(
             minimum_http_timeout_seconds=minimum_http_timeout_seconds,
         )
     except Exception as primary_error:
-        if not is_esa_anonymous_quota_failure(primary_error, output_path):
+        fallback_trigger = classify_esa_fallback_failure(primary_error, output_path)
+        if fallback_trigger is None:
             raise
         return run_aip_async_query(
             query_path,
@@ -209,4 +258,5 @@ def run_async_query_with_quota_fallback(
             minimum_http_timeout_seconds=minimum_http_timeout_seconds,
             queue=AIP_LONG_QUEUE,
             primary_error_type=type(primary_error).__name__,
+            fallback_trigger=fallback_trigger,
         )
