@@ -19,6 +19,7 @@ import pandas as pd
 from hou_compact.gaia_covariance import (
     SB1C_PARAMETER_ORDER,
     SB1_PARAMETER_ORDER,
+    coerce_correlation_vector,
     decode_correlation_matrix,
     validate_bit_index,
 )
@@ -72,6 +73,7 @@ def _parameter_order(solution_type: str) -> tuple[str, ...]:
 
 def covariance_to_correlation(covariance: np.ndarray) -> np.ndarray:
     """Convert a finite covariance matrix to a correlation matrix."""
+
     matrix = np.asarray(covariance, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise ValueError("covariance must be a square matrix")
@@ -104,12 +106,16 @@ def _nsstools_frame(
     rows therefore receive finite period/gamma/K1/epoch uncertainties and NaN eccentricity
     and omega uncertainties; all astrometric and secondary-amplitude fields are explicitly
     inactive. This keeps the independent package's own ordering logic authoritative.
+
+    Candidate relay CSV files serialize Gaia's array-valued ``corr_vec`` as text. It is
+    canonicalized back to a numeric vector here so the DPAC package never receives a Python
+    string whose characters could be mistaken for correlation entries.
     """
 
     payload: dict[str, object] = {
         "source_id": row.get("source_id", -1),
         "nss_solution_type": row.get("nss_solution_type"),
-        "corr_vec": row.get("corr_vec"),
+        "corr_vec": coerce_correlation_vector(row.get("corr_vec")),
     }
     all_fields = (*_NSSTOOLS_BASE_FIELDS, *_NSSTOOLS_SB_FIELDS)
     active = set(parameter_names)
@@ -132,6 +138,7 @@ def _nsstools_frame(
 
 def compare_with_nsstools(row: Mapping[str, object]) -> ReferenceCovarianceComparison:
     """Compare one Gaia row against ``NssSource.covmat`` and fail on order mismatch."""
+
     solution_type = str(row.get("nss_solution_type", "")).strip()
     parameter_names = _parameter_order(solution_type)
     validate_bit_index(solution_type, row.get("bit_index"))
@@ -170,7 +177,9 @@ def compare_with_nsstools(row: Mapping[str, object]) -> ReferenceCovarianceCompa
             "DPAC reference matrix shape differs from HOU-COMPACT decode: "
             f"reference={reference_correlation.shape}, hou={decoded.matrix.shape}"
         )
-    difference = float(np.max(np.abs(reference_correlation - decoded.matrix), initial=0.0))
+    difference = float(
+        np.max(np.abs(reference_correlation - decoded.matrix), initial=0.0)
+    )
     if not math.isfinite(difference):
         raise ValueError("non-finite covariance parity difference")
     return ReferenceCovarianceComparison(
