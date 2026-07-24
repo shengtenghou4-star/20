@@ -243,12 +243,20 @@ def _wait_for_job_with_parse_retries(
         parse_retries,
         retry_backoff_seconds,
     )
-    deadline = monotonic() + float(timeout_seconds)
+    timeout_seconds = float(timeout_seconds)
+    deadline = monotonic() + timeout_seconds
     failures = 0
     last_error_type: str | None = None
+    first_wait = True
 
     while True:
-        remaining = deadline - monotonic()
+        if first_wait:
+            # Preserve the long-standing exact timeout passed to PyVO and existing callers.
+            # Only retries need to subtract elapsed time from the shared scientific deadline.
+            remaining = timeout_seconds
+            first_wait = False
+        else:
+            remaining = deadline - monotonic()
         if remaining <= 0:
             raise TimeoutError("Gaia UWS wait deadline expired after malformed status replies")
         try:
