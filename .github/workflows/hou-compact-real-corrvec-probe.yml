@@ -1,0 +1,51 @@
+name: HOU-COMPACT de-identified live corr_vec probe
+
+on:
+  push:
+    branches:
+      - probe/hou-compact-real-corrvec
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-corrvec-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: capsules/hou_compact_final/hou_compact:src
+    steps:
+      - name: Checkout audited branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install covariance and DPAC reference dependencies
+        run: python -m pip install -e '.[reference]'
+
+      - name: Query exactly one live Gaia covariance row
+        run: |
+          python scripts/run_gaia_query.py \
+            --query queries/gaia_covariance_real_row_probe.adql \
+            --output gaia_covariance_probe.ecsv \
+            --overwrite
+
+      - name: Replace identity and exercise exact enrichment plus DPAC parity
+        run: |
+          python scripts/probe_gaia_covariance_real_row.py \
+            gaia_covariance_probe.ecsv \
+            --output candidate_safe_corrvec_probe.json
+
+      - name: Publish candidate-safe probe receipt
+        if: always()
+        run: |
+          if test -s candidate_safe_corrvec_probe.json; then
+            cat candidate_safe_corrvec_probe.json
+          else
+            printf '%s\n' '{"candidate_safe":true,"status":"failure","error_type":"probe_receipt_missing"}'
+          fi
