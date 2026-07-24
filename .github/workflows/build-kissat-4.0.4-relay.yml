@@ -1,0 +1,40 @@
+name: Build generic Kissat 4.0.4 relay
+
+on:
+  push:
+    branches:
+      - relay/kissat-4.0.4-build-20260725
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout relay branch
+        uses: actions/checkout@v4
+
+      - name: Build Kissat 4.0.4
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch rel-4.0.4 https://github.com/arminbiere/kissat.git kissat-src
+          cd kissat-src
+          ./configure
+          make -j2
+          ./build/kissat --version
+          mkdir -p ../artifact
+          cp build/kissat ../artifact/kissat
+          sha256sum ../artifact/kissat | tee ../artifact/kissat.sha256
+          ldd ../artifact/kissat | tee ../artifact/ldd.txt
+          printf '%s\n' 'source=https://github.com/arminbiere/kissat' 'tag=rel-4.0.4' > ../artifact/provenance.txt
+
+      - name: Upload generic solver artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kissat-4.0.4-linux-x86_64
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 1
