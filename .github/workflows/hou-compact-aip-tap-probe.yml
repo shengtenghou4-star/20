@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/hou-compact-aip-tap-probe.yml'
       - 'queries/gaia_sb1_contamination_pilot_v9.adql'
+      - 'src/hou_compact/gaia_fallback.py'
   workflow_dispatch:
 
 permissions:
@@ -18,7 +19,7 @@ concurrency:
 jobs:
   anonymous-aip-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Checkout audited branch
         uses: actions/checkout@v4
@@ -28,10 +29,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install TAP client
-        run: python -m pip install 'pyvo>=1.5' 'astropy>=6.1'
+      - name: Install audited TAP client
+        run: python -m pip install -e '.[dev]'
 
-      - name: Isolate frozen-query Gaia AIP incompatibility
+      - name: Validate frozen-query AIP syntax normalization
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -40,16 +41,16 @@ jobs:
           import re
           import pyvo
 
+          from hou_compact.gaia_fallback import normalize_aip_adql
+
           receipt_path = Path('aip_probe_safe_receipt.json')
-          remote_jobs = []
-          probes = {}
           receipt = {
-              'schema_version': '1.4',
+              'schema_version': '1.5',
               'candidate_safe': True,
               'tap_service': 'Gaia@AIP',
               'anonymous_access': True,
-              'probes': probes,
           }
+          jobs = []
 
           def redact(value):
               text = re.sub(r'https?://\S+', '<redacted-url>', str(value))
@@ -59,292 +60,103 @@ jobs:
                   text,
               )[:1000]
 
-          service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
-
-          def async_probe(name, query, *, required=(), queue='5m', timeout=600):
-              record = {
-                  'queue': queue,
-                  'status': 'running',
-              }
-              probes[name] = record
-              job = None
-              try:
-                  job = service.submit_job(query, maxrec=1, queue=queue)
-                  remote_jobs.append(job)
-                  job.run()
-                  job.wait(
-                      phases=['COMPLETED', 'ERROR', 'ABORTED'],
-                      timeout=timeout,
-                  )
-                  job.raise_if_error()
-                  table = job.fetch_result().to_table()
-                  names = {str(column).lower() for column in table.colnames}
-                  assert len(table) == 1
-                  missing = sorted(set(required) - names)
-                  assert not missing, f'missing required output columns: {missing}'
-                  record.update({
-                      'status': 'success',
-                      'row_count': len(table),
-                      'required_columns_present': True,
-                  })
-              except BaseException as error:
-                  record.update({
-                      'status': 'failure',
-                      'error_type': type(error).__name__,
-                      'error_message': redact(error),
-                  })
-              finally:
-                  if job is not None:
-                      try:
-                          job.delete()
-                      except Exception:
-                          pass
-
-          required_by_table = {
-              'gaiadr3.nss_two_body_orbit': {
-                  'solution_id', 'source_id', 'nss_solution_type', 'period',
-                  'period_error', 't_periastron', 't_periastron_error',
-                  'eccentricity', 'eccentricity_error', 'arg_periastron',
-                  'arg_periastron_error', 'center_of_mass_velocity',
-                  'center_of_mass_velocity_error', 'semi_amplitude_primary',
-                  'semi_amplitude_primary_error', 'rv_n_obs_primary',
-                  'rv_n_good_obs_primary', 'conf_spectro_period', 'obj_func',
-                  'goodness_of_fit', 'efficiency', 'significance', 'flags',
-                  'bit_index', 'corr_vec',
-              },
-              'gaiadr3.gaia_source': {
-                  'source_id', 'ra', 'dec', 'ref_epoch', 'parallax',
-                  'parallax_error', 'parallax_over_error', 'pmra', 'pmra_error',
-                  'pmdec', 'pmdec_error', 'ruwe', 'astrometric_gof_al',
-                  'astrometric_excess_noise', 'astrometric_excess_noise_sig',
-                  'astrometric_params_solved', 'duplicated_source',
-                  'ipd_gof_harmonic_amplitude', 'ipd_gof_harmonic_phase',
-                  'ipd_frac_multi_peak', 'ipd_frac_odd_win', 'phot_g_n_obs',
-                  'phot_bp_n_obs', 'phot_rp_n_obs', 'phot_g_mean_mag',
-                  'phot_bp_mean_mag', 'phot_rp_mean_mag', 'bp_rp',
-                  'phot_bp_rp_excess_factor',
-                  'phot_bp_n_contaminated_transits',
-                  'phot_bp_n_blended_transits',
-                  'phot_rp_n_contaminated_transits',
-                  'phot_rp_n_blended_transits', 'phot_proc_mode',
-                  'phot_variable_flag', 'has_xp_continuous', 'has_xp_sampled',
-                  'has_rvs', 'has_epoch_photometry', 'has_epoch_rv',
-                  'non_single_star', 'radial_velocity',
-                  'radial_velocity_error', 'rv_nb_transits',
-                  'rv_nb_deblended_transits',
-              },
-              'gaiadr3.astrophysical_parameters': {
-                  'source_id', 'teff_gspphot', 'teff_gspphot_lower',
-                  'teff_gspphot_upper', 'logg_gspphot', 'logg_gspphot_lower',
-                  'logg_gspphot_upper', 'mh_gspphot', 'mh_gspphot_lower',
-                  'mh_gspphot_upper', 'radius_gspphot',
-                  'radius_gspphot_lower', 'radius_gspphot_upper', 'mass_flame',
-                  'mass_flame_lower', 'mass_flame_upper', 'flags_flame',
-              },
-          }
+          def run_async(service, query, *, queue='5m', timeout=600):
+              job = service.submit_job(query, maxrec=1, queue=queue)
+              jobs.append(job)
+              job.run()
+              job.wait(
+                  phases=['COMPLETED', 'ERROR', 'ABORTED'],
+                  timeout=timeout,
+              )
+              job.raise_if_error()
+              return job.fetch_result().to_table()
 
           try:
-              schema_query = '''
-              SELECT table_name, column_name
-              FROM TAP_SCHEMA.columns
-              WHERE table_name IN (
-                  'gaiadr3.nss_two_body_orbit',
-                  'gaiadr3.gaia_source',
-                  'gaiadr3.astrophysical_parameters'
+              service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
+              frozen = Path('queries/gaia_sb1_contamination_pilot_v9.adql').read_text(
+                  encoding='utf-8'
               )
-              '''
-              schema = service.run_sync(schema_query, maxrec=1000).to_table()
-              available = {}
-              for row in schema:
-                  table = str(row['table_name']).lower()
-                  column = str(row['column_name']).lower()
-                  available.setdefault(table, set()).add(column)
-              missing_by_table = {
-                  table: sorted(columns - available.get(table, set()))
-                  for table, columns in required_by_table.items()
-                  if columns - available.get(table, set())
+              marker = 'SELECT TOP 5000'
+              assert frozen.count(marker) == 1
+              exact_top1 = frozen.replace(marker, 'SELECT TOP 1', 1)
+              normalized, replacements = normalize_aip_adql(exact_top1)
+              assert replacements == 1
+              assert 'LEFT OUTER JOIN' not in normalized.upper()
+              assert 'LEFT JOIN' in normalized.upper()
+
+              raw_rejected = False
+              raw_error_type = None
+              raw_job = None
+              try:
+                  raw_job = service.submit_job(exact_top1, maxrec=1, queue='5m')
+                  jobs.append(raw_job)
+                  raw_job.run()
+                  raw_job.wait(
+                      phases=['COMPLETED', 'ERROR', 'ABORTED'],
+                      timeout=300,
+                  )
+                  raw_job.raise_if_error()
+              except BaseException as error:
+                  raw_rejected = True
+                  raw_error_type = type(error).__name__
+              assert raw_rejected
+
+              normalized_result = run_async(service, normalized, queue='5m', timeout=600)
+              names = {str(column).lower() for column in normalized_result.colnames}
+              required = {
+                  'source_id', 'nss_solution_type', 'bit_index', 'corr_vec',
+                  'mass_flame', 'mass_flame_lower', 'period',
+                  'semi_amplitude_primary', 'pk1_cubed_proxy',
               }
-              probes['tap_schema_field_contract'] = {
-                  'status': 'success' if not missing_by_table else 'failure',
-                  'tables_checked': len(required_by_table),
-                  'missing_columns_by_table': missing_by_table,
-              }
+              assert len(normalized_result) == 1
+              assert required <= names
+
+              receipt.update({
+                  'status': 'success',
+                  'raw_left_outer_join_rejected': True,
+                  'raw_error_type': raw_error_type,
+                  'provider_normalization': 'LEFT OUTER JOIN -> LEFT JOIN',
+                  'provider_normalization_count': replacements,
+                  'normalized_full_frozen_query_success': True,
+                  'normalized_queue': '5m',
+                  'frozen_v9_query_shape_preserved': True,
+                  'frozen_v9_row_limit_only_changed_to_one': True,
+                  'required_columns_present': True,
+                  'claim_boundary': (
+                      'Provider syntax-equivalence contract only; no source identifier, '
+                      'row value, coordinate, orbit parameter, covariance value, remote '
+                      'job identifier, or candidate identity is printed or persisted.'
+                  ),
+              })
           except BaseException as error:
-              probes['tap_schema_field_contract'] = {
+              receipt.update({
                   'status': 'failure',
                   'error_type': type(error).__name__,
                   'error_message': redact(error),
-              }
+                  'claim_boundary': (
+                      'Candidate-safe provider-contract failure only; no source identifier, '
+                      'row value, coordinate, orbit parameter, covariance value, remote '
+                      'job identifier, or candidate identity is disclosed.'
+                  ),
+              })
+              receipt_path.write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True),
+                  encoding='utf-8',
+              )
+              print(json.dumps(receipt, sort_keys=True))
+              raise
+          finally:
+              for job in jobs:
+                  try:
+                      job.delete()
+                  except Exception:
+                      pass
 
-          filters = '''
-          WHERE n.nss_solution_type IN ('SB1', 'SB1C')
-            AND n.period IS NOT NULL
-            AND n.period > 0
-            AND n.period_error IS NOT NULL
-            AND n.semi_amplitude_primary IS NOT NULL
-            AND n.semi_amplitude_primary > 0
-            AND n.semi_amplitude_primary_error IS NOT NULL
-            AND n.semi_amplitude_primary_error > 0
-            AND n.significance IS NOT NULL
-            AND n.significance >= 5
-          '''
-
-          join_outer = f'''
-          SELECT TOP 1 n.source_id
-          FROM gaiadr3.nss_two_body_orbit AS n
-          JOIN gaiadr3.gaia_source AS g ON n.source_id = g.source_id
-          LEFT OUTER JOIN gaiadr3.astrophysical_parameters AS ap
-              ON n.source_id = ap.source_id
-          {filters}
-          '''
-          async_probe('three_table_left_outer_join', join_outer, required={'source_id'})
-
-          join_short = join_outer.replace('LEFT OUTER JOIN', 'LEFT JOIN')
-          async_probe('three_table_left_join', join_short, required={'source_id'})
-
-          nss_fields = f'''
-          SELECT TOP 1
-              n.source_id, n.solution_id, n.nss_solution_type,
-              n.period, n.period_error, n.t_periastron,
-              n.t_periastron_error, n.eccentricity, n.eccentricity_error,
-              n.arg_periastron, n.arg_periastron_error,
-              n.center_of_mass_velocity, n.center_of_mass_velocity_error,
-              n.semi_amplitude_primary, n.semi_amplitude_primary_error,
-              n.rv_n_obs_primary, n.rv_n_good_obs_primary,
-              n.conf_spectro_period, n.obj_func, n.goodness_of_fit,
-              n.efficiency, n.significance, n.flags, n.bit_index, n.corr_vec
-          FROM gaiadr3.nss_two_body_orbit AS n
-          {filters}
-          '''
-          async_probe(
-              'nss_full_field_group',
-              nss_fields,
-              required={'source_id', 'bit_index', 'corr_vec'},
-          )
-
-          gaia_fields = f'''
-          SELECT TOP 1
-              n.source_id,
-              g.ra AS gaia_ra, g.dec AS gaia_dec,
-              g.ref_epoch AS gaia_ref_epoch,
-              g.parallax AS gaia_parallax,
-              g.parallax_error AS gaia_parallax_error,
-              g.parallax_over_error, g.pmra, g.pmra_error, g.pmdec,
-              g.pmdec_error, g.ruwe, g.astrometric_gof_al,
-              g.astrometric_excess_noise, g.astrometric_excess_noise_sig,
-              g.astrometric_params_solved, g.duplicated_source,
-              g.ipd_gof_harmonic_amplitude, g.ipd_gof_harmonic_phase,
-              g.ipd_frac_multi_peak, g.ipd_frac_odd_win, g.phot_g_n_obs,
-              g.phot_bp_n_obs, g.phot_rp_n_obs, g.phot_g_mean_mag,
-              g.phot_bp_mean_mag, g.phot_rp_mean_mag, g.bp_rp,
-              g.phot_bp_rp_excess_factor,
-              g.phot_bp_n_contaminated_transits,
-              g.phot_bp_n_blended_transits,
-              g.phot_rp_n_contaminated_transits,
-              g.phot_rp_n_blended_transits, g.phot_proc_mode,
-              g.phot_variable_flag, g.has_xp_continuous, g.has_xp_sampled,
-              g.has_rvs, g.has_epoch_photometry, g.has_epoch_rv,
-              g.non_single_star, g.radial_velocity AS gaia_mean_rv,
-              g.radial_velocity_error AS gaia_mean_rv_error,
-              g.rv_nb_transits, g.rv_nb_deblended_transits
-          FROM gaiadr3.nss_two_body_orbit AS n
-          JOIN gaiadr3.gaia_source AS g ON n.source_id = g.source_id
-          {filters}
-          '''
-          async_probe(
-              'gaia_source_full_field_group',
-              gaia_fields,
-              required={'source_id', 'gaia_ra', 'gaia_mean_rv'},
-          )
-
-          ap_fields = f'''
-          SELECT TOP 1
-              n.source_id,
-              ap.teff_gspphot, ap.teff_gspphot_lower,
-              ap.teff_gspphot_upper, ap.logg_gspphot,
-              ap.logg_gspphot_lower, ap.logg_gspphot_upper,
-              ap.mh_gspphot, ap.mh_gspphot_lower, ap.mh_gspphot_upper,
-              ap.radius_gspphot, ap.radius_gspphot_lower,
-              ap.radius_gspphot_upper, ap.mass_flame,
-              ap.mass_flame_lower, ap.mass_flame_upper, ap.flags_flame
-          FROM gaiadr3.nss_two_body_orbit AS n
-          LEFT OUTER JOIN gaiadr3.astrophysical_parameters AS ap
-              ON n.source_id = ap.source_id
-          {filters}
-          '''
-          async_probe(
-              'astrophysical_parameters_full_field_group',
-              ap_fields,
-              required={'source_id', 'mass_flame', 'mass_flame_lower'},
-          )
-
-          frozen = Path('queries/gaia_sb1_contamination_pilot_v9.adql').read_text(
-              encoding='utf-8'
-          )
-          marker = 'SELECT TOP 5000'
-          assert frozen.count(marker) == 1
-          exact = frozen.replace(marker, 'SELECT TOP 1', 1)
-          no_order = re.sub(
-              r'\nORDER BY\s+pk1_cubed_proxy\s+DESC\s*$',
-              '',
-              exact,
-              flags=re.IGNORECASE,
-          )
-          expression = (
-              'n.period * n.semi_amplitude_primary * n.semi_amplitude_primary\n'
-              '        * n.semi_amplitude_primary AS pk1_cubed_proxy'
-          )
-          simple_proxy = no_order.replace(
-              expression,
-              'n.period AS pk1_cubed_proxy',
-          )
-          assert simple_proxy != no_order
-
-          async_probe(
-              'full_fields_simple_proxy_no_order',
-              simple_proxy,
-              required={'source_id', 'mass_flame', 'corr_vec', 'pk1_cubed_proxy'},
-          )
-          async_probe(
-              'full_fields_expression_no_order',
-              no_order,
-              required={'source_id', 'mass_flame', 'corr_vec', 'pk1_cubed_proxy'},
-          )
-          direct_order = no_order + '''
-          ORDER BY n.period * n.semi_amplitude_primary
-              * n.semi_amplitude_primary * n.semi_amplitude_primary DESC
-          '''
-          async_probe(
-              'full_fields_direct_expression_order',
-              direct_order,
-              required={'source_id', 'mass_flame', 'corr_vec', 'pk1_cubed_proxy'},
-          )
-          async_probe(
-              'full_fields_alias_order',
-              exact,
-              required={'source_id', 'mass_flame', 'corr_vec', 'pk1_cubed_proxy'},
-          )
-
-          failed = sorted(
-              name for name, result in probes.items()
-              if result.get('status') != 'success'
-          )
-          receipt.update({
-              'status': 'success' if not failed else 'failure',
-              'failed_probes': failed,
-              'claim_boundary': (
-                  'Anonymous schema and ADQL compatibility matrix only; no source '
-                  'identifier, row value, coordinate, orbit parameter, covariance value, '
-                  'remote job identifier, or candidate identity is printed or persisted.'
-              ),
-          })
           receipt_path.write_text(
               json.dumps(receipt, indent=2, sort_keys=True),
               encoding='utf-8',
           )
           print(json.dumps(receipt, sort_keys=True))
-          if failed:
-              raise SystemExit(1)
           PY
 
       - name: Upload candidate-safe probe receipt
