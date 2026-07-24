@@ -94,11 +94,35 @@ def _safe_error_path(command: str) -> Path:
     return parent / "gaia_vetting_safe_error.json"
 
 
+def _safe_summary_path(command: str) -> Path | None:
+    flag = "--summary" if command == "prepare" else "--summary-output"
+    try:
+        return _flag_value(flag)
+    except BaseException:
+        return None
+
+
 def _persist_safe_error(command: str, error: BaseException) -> None:
+    payload = _safe_error_payload(command, error)
     path = _safe_error_path(command)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        _json.dumps(_safe_error_payload(command, error), indent=2, sort_keys=True),
+        _json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    summary_path = _safe_summary_path(command)
+    if summary_path is None or not summary_path.exists() or summary_path.stat().st_size == 0:
+        return
+    try:
+        summary = _json.loads(summary_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _json.JSONDecodeError):
+        return
+    if not isinstance(summary, dict) or summary.get("candidate_safe") is not True:
+        return
+    summary["gaia_vetting_failure"] = payload
+    summary_path.write_text(
+        _json.dumps(summary, indent=2, sort_keys=True),
         encoding="utf-8",
     )
 
