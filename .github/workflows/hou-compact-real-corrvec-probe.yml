@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - probe/hou-compact-real-corrvec
+  pull_request:
+    branches:
+      - probe-base/hou-compact-real-corrvec
   workflow_dispatch:
 
 permissions:
