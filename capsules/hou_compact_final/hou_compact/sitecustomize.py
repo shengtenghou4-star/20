@@ -71,10 +71,8 @@ def _run_vetting_hook() -> None:
             augment_candidate_gaia,
             augment_phase_products,
         )
-        from gaia_covariance_vetting import (
-            augment_candidate_covariance_fields,
-            augment_covariance_phase_products,
-        )
+        from gaia_covariance_enrichment import augment_candidate_covariance_fields
+        from gaia_covariance_vetting import augment_covariance_phase_products
 
         command = sys.argv[1]
         if command == "prepare":
