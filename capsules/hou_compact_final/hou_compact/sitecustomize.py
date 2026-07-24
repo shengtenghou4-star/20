@@ -58,6 +58,12 @@ def _load_with_legacy_aliases(file_object: Any, *args: Any, **kwargs: Any) -> An
 _json.load = _load_with_legacy_aliases
 
 
+def _redact_message(value: object, *, limit: int = 1000) -> str:
+    message = _LONG_INTEGER.sub("<redacted-id>", str(value))
+    message = _URL.sub("<redacted-url>", message)
+    return message[:limit]
+
+
 def _flag_value(name: str) -> Path:
     try:
         index = sys.argv.index(name)
@@ -69,15 +75,13 @@ def _flag_value(name: str) -> Path:
 
 
 def _safe_error_payload(stage: str, error: BaseException) -> dict[str, object]:
-    message = _LONG_INTEGER.sub("<redacted-id>", str(error))
-    message = _URL.sub("<redacted-url>", message)
     return {
         "schema_version": "0.2",
         "candidate_safe": True,
         "status": "failure",
         "stage": stage,
         "error_type": type(error).__name__,
-        "error_message": message[:1000],
+        "error_message": _redact_message(error),
         "claim_boundary": (
             "Sanitized post-command vetting failure only; no source identity, coordinate, "
             "obsid, RV, timestamp, orbit value, covariance coefficient, or mass is disclosed."
@@ -112,7 +116,9 @@ def _persist_safe_error(command: str, stage: str, error: BaseException) -> None:
     )
 
     summary_path = _safe_summary_path(command)
-    if summary_path is None or not summary_path.exists() or summary_path.stat().st_size == 0:
+    if summary_path is None or not summary_path.exists():
+        return
+    if summary_path.stat().st_size == 0:
         return
     try:
         summary = _json.loads(summary_path.read_text(encoding="utf-8"))
@@ -181,9 +187,128 @@ def _run_vetting_hook() -> None:
         os._exit(1)
 
 
+def _load_json_object(path: Path) -> dict[str, object] | None:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        value = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _safe_external_failure(
+    *,
+    stage: str,
+    manifest_path: Path,
+) -> dict[str, object]:
+    manifest = _load_json_object(manifest_path)
+    if manifest is None:
+        return {
+            "candidate_safe": True,
+            "status": "failure",
+            "stage": stage,
+            "error_type": "failure_manifest_missing",
+            "error_message": (
+                "The external stage failed without a readable candidate-safe failure receipt."
+            ),
+        }
+
+    payload: dict[str, object] = {
+        "candidate_safe": True,
+        "status": "failure",
+        "stage": stage,
+        "error_type": str(manifest.get("error_type", "unknown_external_error")),
+        "error_message": _redact_message(
+            manifest.get("error_message", "external stage failed")
+        ),
+    }
+    for key in (
+        "execution_mode",
+        "terminal_phase",
+        "output_exists",
+        "input_source_count",
+    ):
+        value = manifest.get(key)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            payload[key] = value
+
+    settings = manifest.get("settings")
+    if isinstance(settings, dict):
+        allowed_settings = {
+            key: value
+            for key, value in settings.items()
+            if key
+            in {
+                "batch_size",
+                "maxrec_per_batch",
+                "query_retries_per_batch",
+                "retry_backoff_seconds",
+            }
+            and isinstance(value, (str, int, float, bool))
+        }
+        if allowed_settings:
+            payload["settings"] = allowed_settings
+
+    for key in (
+        "fetch_retries",
+        "wait_timeout_seconds",
+        "minimum_http_timeout_seconds",
+    ):
+        value = manifest.get(key)
+        if isinstance(value, (int, float)):
+            payload[key] = value
+    payload["claim_boundary"] = (
+        "Candidate-safe external-service failure only; no source identifier, coordinate, "
+        "query text, remote job identifier, or candidate measurement is disclosed."
+    )
+    return payload
+
+
+def _inject_external_stage_failures() -> None:
+    """Append sanitized Gaia/bridge failures after the workflow writes its safe receipt."""
+    summary_path = Path("candidate_safe_final_hybrid_summary.json")
+    summary = _load_json_object(summary_path)
+    if summary is None or summary.get("candidate_safe") is not True:
+        return
+
+    gaia_outcome = os.environ.get("GAIA_OUTCOME")
+    bridge_outcome = os.environ.get("BRIDGE_OUTCOME")
+    failures: list[dict[str, object]] = []
+    if gaia_outcome != "success":
+        failures.append(
+            _safe_external_failure(
+                stage="gaia_v9",
+                manifest_path=Path(
+                    "relay_work/gaia_seed.ecsv.failure.manifest.json"
+                ),
+            )
+        )
+    elif bridge_outcome != "success":
+        failures.append(
+            _safe_external_failure(
+                stage="dr3_dr2_bridge",
+                manifest_path=Path(
+                    "relay_work/gaia_dr2_bridge.csv.failure.manifest.json"
+                ),
+            )
+        )
+
+    if not failures:
+        return
+    summary["external_stage_failures"] = failures
+    summary_path.write_text(
+        _json.dumps(summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 if (
     Path(sys.argv[0]).name == "phase_followup_pipeline.py"
     and len(sys.argv) > 1
     and sys.argv[1] in {"prepare", "validate"}
 ):
     atexit.register(_run_vetting_hook)
+
+if "GAIA_OUTCOME" in os.environ and "BRIDGE_OUTCOME" in os.environ:
+    atexit.register(_inject_external_stage_failures)
