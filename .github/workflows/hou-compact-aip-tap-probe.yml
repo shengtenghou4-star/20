@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/hou-compact-aip-tap-probe.yml'
+      - 'queries/gaia_sb1_contamination_pilot_v9.adql'
   workflow_dispatch:
 
 permissions:
@@ -17,7 +18,7 @@ concurrency:
 jobs:
   anonymous-aip-contract:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Checkout audited branch
         uses: actions/checkout@v4
@@ -30,71 +31,153 @@ jobs:
       - name: Install TAP client
         run: python -m pip install 'pyvo>=1.5' 'astropy>=6.1'
 
-      - name: Probe synchronous and asynchronous Gaia AIP contracts
+      - name: Probe minimal and frozen-query Gaia AIP contracts
         run: |
           set -euo pipefail
           python - <<'PY'
           import json
           from pathlib import Path
+          import re
           import pyvo
 
-          service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
-          query = '''
-          SELECT TOP 1
-              source_id,
-              nss_solution_type,
-              bit_index,
-              corr_vec
-          FROM gaiadr3.nss_two_body_orbit
-          WHERE nss_solution_type IN ('SB1', 'SB1C')
-            AND bit_index IS NOT NULL
-            AND corr_vec IS NOT NULL
-          '''
-          required = {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'}
-
-          sync_result = service.run_sync(query, maxrec=1).to_table()
-          assert len(sync_result) == 1
-          assert required <= {str(name).lower() for name in sync_result.colnames}
-
-          job = service.submit_job(query, maxrec=1, queue='30s')
-          try:
-              job.run()
-              job.wait(phases=['COMPLETED', 'ERROR', 'ABORTED'], timeout=180)
-              job.raise_if_error()
-              async_result = job.fetch_result().to_table()
-          finally:
-              try:
-                  job.delete()
-              except Exception:
-                  pass
-
-          assert len(async_result) == 1
-          assert required <= {str(name).lower() for name in async_result.colnames}
-
+          receipt_path = Path('aip_probe_safe_receipt.json')
+          stage = 'initialization'
+          remote_jobs = []
           receipt = {
-              'schema_version': '1.1',
+              'schema_version': '1.2',
               'candidate_safe': True,
-              'status': 'success',
               'tap_service': 'Gaia@AIP',
               'anonymous_access': True,
-              'sync_success': True,
-              'async_success': True,
-              'async_queue': '30s',
-              'sync_row_count': len(sync_result),
-              'async_row_count': len(async_result),
-              'required_columns_present': True,
-              'claim_boundary': (
-                  'Service, schema, and anonymous async-queue contract only; no source '
-                  'identifier, row value, coordinate, orbit parameter, covariance value, '
-                  'remote job identifier, or candidate identity is printed or persisted.'
-              ),
           }
-          Path('aip_probe_safe_receipt.json').write_text(
-              json.dumps(receipt, indent=2, sort_keys=True), encoding='utf-8')
+
+          def redact(value):
+              text = re.sub(r'https?://\S+', '<redacted-url>', str(value))
+              return re.sub(r'(?<![0-9])[0-9]{10,20}(?![0-9])', '<redacted-id>', text)[:1000]
+
+          def run_async(service, query, *, queue, timeout):
+              job = service.submit_job(query, maxrec=1, queue=queue)
+              remote_jobs.append(job)
+              job.run()
+              job.wait(phases=['COMPLETED', 'ERROR', 'ABORTED'], timeout=timeout)
+              job.raise_if_error()
+              return job.fetch_result().to_table()
+
+          try:
+              service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
+
+              stage = 'minimal_sync_schema'
+              minimal_query = '''
+              SELECT TOP 1
+                  source_id,
+                  nss_solution_type,
+                  bit_index,
+                  corr_vec
+              FROM gaiadr3.nss_two_body_orbit
+              WHERE nss_solution_type IN ('SB1', 'SB1C')
+                AND bit_index IS NOT NULL
+                AND corr_vec IS NOT NULL
+              '''
+              minimal_required = {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'}
+              sync_result = service.run_sync(minimal_query, maxrec=1).to_table()
+              assert len(sync_result) == 1
+              assert minimal_required <= {
+                  str(name).lower() for name in sync_result.colnames
+              }
+
+              stage = 'minimal_async_30s'
+              minimal_async = run_async(
+                  service,
+                  minimal_query,
+                  queue='30s',
+                  timeout=180,
+              )
+              assert len(minimal_async) == 1
+              assert minimal_required <= {
+                  str(name).lower() for name in minimal_async.colnames
+              }
+
+              stage = 'frozen_v9_query_contract'
+              frozen = Path('queries/gaia_sb1_contamination_pilot_v9.adql').read_text(
+                  encoding='utf-8'
+              )
+              marker = 'SELECT TOP 5000'
+              assert frozen.count(marker) == 1
+              frozen_probe = frozen.replace(marker, 'SELECT TOP 1', 1)
+              full_required = {
+                  'source_id',
+                  'nss_solution_type',
+                  'bit_index',
+                  'corr_vec',
+                  'mass_flame',
+                  'mass_flame_lower',
+                  'period',
+                  'semi_amplitude_primary',
+                  'pk1_cubed_proxy',
+              }
+
+              stage = 'frozen_v9_async_2h'
+              frozen_result = run_async(
+                  service,
+                  frozen_probe,
+                  queue='2h',
+                  timeout=600,
+              )
+              assert len(frozen_result) == 1
+              assert full_required <= {
+                  str(name).lower() for name in frozen_result.colnames
+              }
+
+              receipt.update({
+                  'status': 'success',
+                  'minimal_sync_success': True,
+                  'minimal_async_success': True,
+                  'minimal_async_queue': '30s',
+                  'frozen_v9_async_success': True,
+                  'frozen_v9_async_queue': '2h',
+                  'frozen_v9_query_shape_preserved': True,
+                  'frozen_v9_row_limit_only_changed_to_one': True,
+                  'required_columns_present': True,
+                  'claim_boundary': (
+                      'Anonymous service, queue, full frozen-query schema, join, and parser '
+                      'contract only; no source identifier, row value, coordinate, orbit '
+                      'parameter, covariance value, remote job identifier, or candidate '
+                      'identity is printed or persisted.'
+                  ),
+              })
+          except BaseException as error:
+              receipt.update({
+                  'status': 'failure',
+                  'stage': stage,
+                  'error_type': type(error).__name__,
+                  'error_message': redact(error),
+                  'claim_boundary': (
+                      'Candidate-safe provider-contract failure only; no source identifier, '
+                      'row value, coordinate, orbit parameter, covariance value, remote job '
+                      'identifier, or candidate identity is disclosed.'
+                  ),
+              })
+              receipt_path.write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True),
+                  encoding='utf-8',
+              )
+              print(json.dumps(receipt, sort_keys=True))
+              raise
+          finally:
+              for job in remote_jobs:
+                  try:
+                      job.delete()
+                  except Exception:
+                      pass
+
+          receipt_path.write_text(
+              json.dumps(receipt, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
           print(json.dumps(receipt, sort_keys=True))
           PY
 
       - name: Upload candidate-safe probe receipt
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: hou-compact-aip-safe-probe-${{ github.run_id }}
