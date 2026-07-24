@@ -32,7 +32,7 @@ jobs:
           cp build/kissat ../artifact/kissat
           sha256sum ../artifact/kissat | tee ../artifact/kissat.sha256
           ldd ../artifact/kissat | tee ../artifact/ldd.txt
-          printf '%s\n' 'source=https://github.com/arminbiere/kissat' 'tag=rel-4.0.4' > ../artifact/provenance.txt
+          printf '%s\n' 'source=https://github.com/arminbiere/kissat' 'tag=rel-4.0.4' 'purpose=generic-solver-relay-only' > ../artifact/provenance.txt
 
       - name: Upload generic solver artifact
         uses: actions/upload-artifact@v4
