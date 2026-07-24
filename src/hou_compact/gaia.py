@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Callable
 
 import pyvo
 
@@ -17,6 +19,9 @@ from hou_compact.http_timeout import (
 )
 
 DEFAULT_GAIA_TAP_URL = "https://gea.esac.esa.int/tap-server/tap"
+DEFAULT_STATUS_PARSE_RETRIES = 8
+DEFAULT_STATUS_PARSE_RETRY_BACKOFF_SECONDS = 2.0
+_STATUS_PARSE_ERRORS = (ValueError, SyntaxError)
 
 
 def sha256_file(path: Path) -> str:
@@ -198,6 +203,101 @@ def _cached_job_phase(job: object) -> str | None:
     return None if direct is None else str(direct)
 
 
+def _validate_status_retry_settings(
+    parse_retries: int,
+    retry_backoff_seconds: float,
+) -> tuple[int, float]:
+    if isinstance(parse_retries, bool) or not isinstance(parse_retries, int):
+        raise TypeError("status_parse_retries must be an integer")
+    if parse_retries < 0:
+        raise ValueError("status_parse_retries must be non-negative")
+    backoff = float(retry_backoff_seconds)
+    if not math.isfinite(backoff) or not 0.0 <= backoff <= 300.0:
+        raise ValueError(
+            "status_parse_retry_backoff_seconds must be finite and within [0, 300]"
+        )
+    return parse_retries, backoff
+
+
+def _wait_for_job_with_parse_retries(
+    job: object,
+    *,
+    timeout_seconds: float,
+    parse_retries: int = DEFAULT_STATUS_PARSE_RETRIES,
+    retry_backoff_seconds: float = DEFAULT_STATUS_PARSE_RETRY_BACKOFF_SECONDS,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Wait on one UWS job while retrying malformed status XML within one deadline.
+
+    PyVO retries connection and timeout failures at the HTTP layer, but parsing a malformed
+    HTTP-200 UWS document happens after that layer. Gaia occasionally emits a truncated or
+    mismatched XML status response while the underlying job remains valid. This wrapper
+    re-enters ``wait`` on the same job only for parser-shaped exceptions; query errors and
+    invalid job phases are not caught.
+    """
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be finite and positive")
+    parse_retries, backoff = _validate_status_retry_settings(
+        parse_retries,
+        retry_backoff_seconds,
+    )
+    timeout_seconds = float(timeout_seconds)
+    deadline = monotonic() + timeout_seconds
+    failures = 0
+    last_error_type: str | None = None
+    first_wait = True
+
+    while True:
+        if first_wait:
+            # Preserve the long-standing exact timeout passed to PyVO and existing callers.
+            # Only retries need to subtract elapsed time from the shared scientific deadline.
+            remaining = timeout_seconds
+            first_wait = False
+        else:
+            remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Gaia UWS wait deadline expired after malformed status replies")
+        try:
+            job.wait(timeout=remaining)
+            receipt: dict[str, object] = {
+                "status_parse_failures": failures,
+                "status_parse_retries_allowed": parse_retries,
+                "status_parse_retry_backoff_seconds": backoff,
+            }
+            if last_error_type is not None:
+                receipt["last_status_parse_error_type"] = last_error_type
+            if details is not None:
+                details.update(receipt)
+            return receipt
+        except _STATUS_PARSE_ERRORS as error:
+            failures += 1
+            last_error_type = type(error).__name__
+            if details is not None:
+                details.update(
+                    {
+                        "status_parse_failures": failures,
+                        "status_parse_retries_allowed": parse_retries,
+                        "status_parse_retry_backoff_seconds": backoff,
+                        "last_status_parse_error_type": last_error_type,
+                    }
+                )
+            if failures > parse_retries:
+                raise
+            remaining_after_error = deadline - monotonic()
+            if remaining_after_error <= 0:
+                raise TimeoutError(
+                    "Gaia UWS wait deadline expired after malformed status reply"
+                ) from error
+            delay = min(
+                backoff * min(2 ** (failures - 1), 16),
+                remaining_after_error,
+            )
+            if delay > 0:
+                sleep(delay)
+
+
 def run_async_query(
     query_path: Path,
     output_path: Path,
@@ -210,17 +310,21 @@ def run_async_query(
     fetch_retries: int = 3,
     delete_job: bool = True,
     minimum_http_timeout_seconds: float = DEFAULT_MINIMUM_HTTP_TIMEOUT_SECONDS,
+    status_parse_retries: int = DEFAULT_STATUS_PARSE_RETRIES,
+    status_parse_retry_backoff_seconds: float = (
+        DEFAULT_STATUS_PARSE_RETRY_BACKOFF_SECONDS
+    ),
 ) -> dict[str, object]:
     """Execute a frozen ADQL query as a persistent server-side UWS job.
 
     Gaia's synchronous endpoint may abort expensive joins or ordered queries before the
-    server has time to finish. The asynchronous path submits a UWS job, records its URL and
-    phase, waits for a terminal state, fetches the result, and optionally removes the remote
-    job after the local checksummed table is written.
+    server has time to finish. The asynchronous path submits one UWS job, records its URL
+    and phase, waits for a terminal state, fetches the result, and optionally removes the
+    remote job after the local checksummed table is written.
 
-    PyVO's UWS status requests may otherwise use a fixed ten-second read timeout. A
-    dedicated TAP session raises only undersized HTTP timeouts to
-    ``minimum_http_timeout_seconds``; the scientific wait deadline and query are unchanged.
+    HTTP connection and status-code retries are handled by ``MinimumTimeoutSession``.
+    Malformed HTTP-200 UWS XML is retried separately on the same job under the original
+    scientific wait deadline; a bad status document never resubmits the query.
     """
     query_path, output_path, query = _prepare_query_paths(
         query_path,
@@ -238,6 +342,12 @@ def run_async_query(
         raise ValueError("wait_timeout_seconds must be finite and positive")
     if fetch_retries < 0:
         raise ValueError("fetch_retries must be non-negative")
+    status_parse_retries, status_parse_retry_backoff_seconds = (
+        _validate_status_retry_settings(
+            status_parse_retries,
+            status_parse_retry_backoff_seconds,
+        )
+    )
     minimum_http_timeout_seconds = validate_minimum_http_timeout(
         minimum_http_timeout_seconds
     )
@@ -251,6 +361,9 @@ def run_async_query(
         "minimum_http_timeout_seconds": minimum_http_timeout_seconds,
         "fetch_retries": fetch_retries,
         "delete_job": delete_job,
+        "status_parse_retries_allowed": status_parse_retries,
+        "status_parse_retry_backoff_seconds": status_parse_retry_backoff_seconds,
+        "status_parse_failures": 0,
     }
     try:
         service = pyvo.dal.TAPService(tap_url, session=tap_session)
@@ -269,7 +382,14 @@ def run_async_query(
         else:
             job_details["execution_duration_configured"] = False
             job_details["execution_duration_configuration_skipped"] = True
-        job.run().wait(timeout=wait_timeout_seconds)
+        job.run()
+        _wait_for_job_with_parse_retries(
+            job,
+            timeout_seconds=wait_timeout_seconds,
+            parse_retries=status_parse_retries,
+            retry_backoff_seconds=status_parse_retry_backoff_seconds,
+            details=job_details,
+        )
         job_details["terminal_phase"] = _cached_job_phase(job)
         job.raise_if_error()
         result = job.fetch_result(max_retries=fetch_retries)

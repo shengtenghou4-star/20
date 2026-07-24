@@ -1,0 +1,169 @@
+name: HOU-COMPACT Gaia AIP de-identified TAP probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/hou-compact-aip-tap-probe.yml'
+      - 'queries/gaia_sb1_contamination_pilot_v9.adql'
+      - 'src/hou_compact/gaia_fallback.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hou-compact-aip-tap-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  anonymous-aip-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout audited branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install audited TAP client
+        run: python -m pip install -e '.[dev]'
+
+      - name: Validate frozen-query AIP syntax normalization
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import pyvo
+
+          from hou_compact.gaia_fallback import normalize_aip_adql
+
+          receipt_path = Path('aip_probe_safe_receipt.json')
+          receipt = {
+              'schema_version': '1.5',
+              'candidate_safe': True,
+              'tap_service': 'Gaia@AIP',
+              'anonymous_access': True,
+          }
+          jobs = []
+
+          def redact(value):
+              text = re.sub(r'https?://\S+', '<redacted-url>', str(value))
+              return re.sub(
+                  r'(?<![0-9])[0-9]{10,20}(?![0-9])',
+                  '<redacted-id>',
+                  text,
+              )[:1000]
+
+          def run_async(service, query, *, queue='5m', timeout=600):
+              job = service.submit_job(query, maxrec=1, queue=queue)
+              jobs.append(job)
+              job.run()
+              job.wait(
+                  phases=['COMPLETED', 'ERROR', 'ABORTED'],
+                  timeout=timeout,
+              )
+              job.raise_if_error()
+              return job.fetch_result().to_table()
+
+          try:
+              service = pyvo.dal.TAPService('https://gaia.aip.de/tap')
+              frozen = Path('queries/gaia_sb1_contamination_pilot_v9.adql').read_text(
+                  encoding='utf-8'
+              )
+              marker = 'SELECT TOP 5000'
+              assert frozen.count(marker) == 1
+              exact_top1 = frozen.replace(marker, 'SELECT TOP 1', 1)
+              normalized, replacements = normalize_aip_adql(exact_top1)
+              assert replacements == 1
+              assert 'LEFT OUTER JOIN' not in normalized.upper()
+              assert 'LEFT JOIN' in normalized.upper()
+
+              raw_rejected = False
+              raw_error_type = None
+              raw_job = None
+              try:
+                  raw_job = service.submit_job(exact_top1, maxrec=1, queue='5m')
+                  jobs.append(raw_job)
+                  raw_job.run()
+                  raw_job.wait(
+                      phases=['COMPLETED', 'ERROR', 'ABORTED'],
+                      timeout=300,
+                  )
+                  raw_job.raise_if_error()
+              except BaseException as error:
+                  raw_rejected = True
+                  raw_error_type = type(error).__name__
+              assert raw_rejected
+
+              normalized_result = run_async(service, normalized, queue='5m', timeout=600)
+              names = {str(column).lower() for column in normalized_result.colnames}
+              required = {
+                  'source_id', 'nss_solution_type', 'bit_index', 'corr_vec',
+                  'mass_flame', 'mass_flame_lower', 'period',
+                  'semi_amplitude_primary', 'pk1_cubed_proxy',
+              }
+              assert len(normalized_result) == 1
+              assert required <= names
+
+              receipt.update({
+                  'status': 'success',
+                  'raw_left_outer_join_rejected': True,
+                  'raw_error_type': raw_error_type,
+                  'provider_normalization': 'LEFT OUTER JOIN -> LEFT JOIN',
+                  'provider_normalization_count': replacements,
+                  'normalized_full_frozen_query_success': True,
+                  'normalized_queue': '5m',
+                  'frozen_v9_query_shape_preserved': True,
+                  'frozen_v9_row_limit_only_changed_to_one': True,
+                  'required_columns_present': True,
+                  'claim_boundary': (
+                      'Provider syntax-equivalence contract only; no source identifier, '
+                      'row value, coordinate, orbit parameter, covariance value, remote '
+                      'job identifier, or candidate identity is printed or persisted.'
+                  ),
+              })
+          except BaseException as error:
+              receipt.update({
+                  'status': 'failure',
+                  'error_type': type(error).__name__,
+                  'error_message': redact(error),
+                  'claim_boundary': (
+                      'Candidate-safe provider-contract failure only; no source identifier, '
+                      'row value, coordinate, orbit parameter, covariance value, remote '
+                      'job identifier, or candidate identity is disclosed.'
+                  ),
+              })
+              receipt_path.write_text(
+                  json.dumps(receipt, indent=2, sort_keys=True),
+                  encoding='utf-8',
+              )
+              print(json.dumps(receipt, sort_keys=True))
+              raise
+          finally:
+              for job in jobs:
+                  try:
+                      job.delete()
+                  except Exception:
+                      pass
+
+          receipt_path.write_text(
+              json.dumps(receipt, indent=2, sort_keys=True),
+              encoding='utf-8',
+          )
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+
+      - name: Upload candidate-safe probe receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hou-compact-aip-safe-probe-${{ github.run_id }}
+          path: aip_probe_safe_receipt.json
+          if-no-files-found: error
+          retention-days: 14

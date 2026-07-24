@@ -6,6 +6,8 @@ from unittest import mock
 from hou_compact.http_timeout import (
     MinimumTimeoutSession,
     validate_minimum_http_timeout,
+    validate_retry_backoff_seconds,
+    validate_transient_http_retries,
     widen_timeout,
 )
 
@@ -33,6 +35,38 @@ class MinimumTimeoutTests(unittest.TestCase):
             with self.subTest(timeout=timeout):
                 with self.assertRaises(ValueError):
                     widen_timeout(timeout, 90)
+
+    def test_invalid_retry_settings_fail_closed(self) -> None:
+        for value in (-1, 21):
+            with self.subTest(retries=value):
+                with self.assertRaises(ValueError):
+                    validate_transient_http_retries(value)
+        for value in (True, 1.5, "3"):
+            with self.subTest(retries=value):
+                with self.assertRaises(TypeError):
+                    validate_transient_http_retries(value)  # type: ignore[arg-type]
+        for value in (-1, float("nan"), float("inf"), 61):
+            with self.subTest(backoff=value):
+                with self.assertRaises(ValueError):
+                    validate_retry_backoff_seconds(value)
+
+    def test_session_retries_only_idempotent_read_methods(self) -> None:
+        session = MinimumTimeoutSession(
+            90,
+            transient_http_retries=6,
+            retry_backoff_seconds=0.5,
+        )
+        retries = session.get_adapter("https://example.invalid/status").max_retries
+        self.assertEqual(retries.total, 6)
+        self.assertEqual(retries.connect, 6)
+        self.assertEqual(retries.read, 6)
+        self.assertEqual(retries.status, 6)
+        self.assertIn("GET", retries.allowed_methods)
+        self.assertIn("HEAD", retries.allowed_methods)
+        self.assertNotIn("POST", retries.allowed_methods)
+        self.assertNotIn("DELETE", retries.allowed_methods)
+        self.assertIn(503, retries.status_forcelist)
+        self.assertEqual(retries.backoff_factor, 0.5)
 
     def test_session_passes_widened_timeout_without_changing_request(self) -> None:
         session = MinimumTimeoutSession(90)

@@ -7,7 +7,8 @@ import argparse
 import json
 from pathlib import Path
 
-from hou_compact.gaia import run_async_query, run_sync_query
+from hou_compact.gaia import run_sync_query
+from hou_compact.gaia_fallback import run_async_query_with_quota_fallback
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,14 +29,17 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=("async", "sync"),
         default="async",
-        help="TAP execution mode; async is safer for joined or ordered Gaia queries",
+        help=(
+            "TAP execution mode; async uses ESA first and falls back to Gaia@AIP only "
+            "for the explicit ESA anonymous-filesystem quota rejection"
+        ),
     )
     parser.add_argument("--maxrec", type=int)
     parser.add_argument(
         "--execution-duration-seconds",
         type=float,
         help=(
-            "optional remote UWS execution-duration request; omitted by default because "
+            "optional ESA remote UWS execution-duration request; omitted by default because "
             "some anonymous TAP services reject this property"
         ),
     )
@@ -60,7 +64,7 @@ def main() -> None:
             maxrec=args.maxrec,
         )
     else:
-        manifest = run_async_query(
+        manifest = run_async_query_with_quota_fallback(
             args.query,
             args.output,
             overwrite=args.overwrite,

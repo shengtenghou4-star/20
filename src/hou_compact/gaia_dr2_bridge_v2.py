@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import time
 from collections.abc import Callable, Iterable
 
 import pandas as pd
@@ -98,11 +99,26 @@ def query_gaia_dr2_neighbourhood_v2(
     query_executor: Callable[[str, str, int], pd.DataFrame] = (
         _default_query_executor
     ),
+    query_retries: int = 0,
+    retry_backoff_seconds: float = 0.0,
 ) -> tuple[pd.DataFrame, list[GaiaDr2BridgeBatchReceipt]]:
-    """Retrieve and client-order all DR2 neighbours for DR3 source batches."""
+    """Retrieve and client-order all DR2 neighbours for DR3 source batches.
+
+    Each TAP batch is retried independently after transport/service exceptions. A
+    scientific response-contract failure is never retried: once a response exists,
+    missing columns, unexpected source identifiers, truncation, or invalid values fail
+    closed immediately. This prevents one transient failure near the end of a 5,000-source
+    bridge from discarding all previously successful remote work within the attempt.
+    """
     identifiers = _source_ids(source_ids)
     if not identifiers:
         return pd.DataFrame(columns=_EXPECTED_COLUMNS), []
+    if isinstance(query_retries, bool) or not isinstance(query_retries, int):
+        raise TypeError("query_retries must be an integer")
+    if query_retries < 0:
+        raise ValueError("query_retries must be non-negative")
+    if not math.isfinite(retry_backoff_seconds) or retry_backoff_seconds < 0:
+        raise ValueError("retry_backoff_seconds must be finite and non-negative")
 
     frames: list[pd.DataFrame] = []
     receipts: list[GaiaDr2BridgeBatchReceipt] = []
@@ -111,16 +127,29 @@ def query_gaia_dr2_neighbourhood_v2(
     ):
         batch = identifiers[start : start + config.batch_size]
         adql = build_gaia_dr2_bridge_adql_v2(batch)
-        try:
-            raw = query_executor(config.tap_url, adql, config.maxrec_per_batch)
-            frame = _validate_batch(raw, set(batch))
-        except Exception as error:
-            if isinstance(error, GaiaDr2BridgeError):
-                raise
+        raw: pd.DataFrame | None = None
+        last_error: BaseException | None = None
+        for attempt_index in range(query_retries + 1):
+            try:
+                raw = query_executor(config.tap_url, adql, config.maxrec_per_batch)
+                break
+            except Exception as error:  # remote transport/service boundary
+                last_error = error
+                if attempt_index >= query_retries:
+                    break
+                delay = min(retry_backoff_seconds * (2**attempt_index), 60.0)
+                if delay > 0:
+                    time.sleep(delay)
+        if raw is None:
+            assert last_error is not None
             raise GaiaDr2BridgeError(
-                f"Gaia DR2 bridge batch {batch_index} failed: "
-                f"{type(error).__name__}: {error}"
-            ) from error
+                f"Gaia DR2 bridge batch {batch_index} failed after "
+                f"{query_retries + 1} attempts: {type(last_error).__name__}: "
+                f"{last_error}"
+            ) from last_error
+
+        # Response validation is a scientific contract. Never hide or retry it.
+        frame = _validate_batch(raw, set(batch))
         if len(frame) >= config.maxrec_per_batch:
             raise GaiaDr2BridgeError(
                 f"Gaia bridge batch {batch_index} reached maxrec; "
