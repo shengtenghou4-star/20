@@ -3,8 +3,10 @@
 The ESA archive remains authoritative and is always attempted first. Gaia@AIP is used
 only for an explicit ESA anonymous-filesystem quota rejection or the equivalent generic
 HTTP-400 ``DALServiceError`` currently emitted when ESA suppresses that rejection body.
-Query text, ordering, row limit, output format, and all downstream scientific gates remain
-unchanged. The mirror result is never accepted merely because the primary provider failed.
+The frozen query, ordering, row limit, output format, and all downstream scientific gates
+remain unchanged. On AIP only, the ADQL spelling ``LEFT OUTER JOIN`` is normalized to the
+semantically identical ``LEFT JOIN`` accepted by that provider. The mirror result is never
+accepted merely because the primary provider failed.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
+import re
 
 import pyvo
 
@@ -46,6 +49,8 @@ _GENERIC_ESA_400_TOKENS = (
 )
 _EXPLICIT_QUOTA_TRIGGER = "esa_anonymous_filesystem_quota"
 _GENERIC_ESA_400_TRIGGER = "esa_dalservice_http_400"
+_AIP_LEFT_OUTER_JOIN = re.compile(r"\bLEFT\s+OUTER\s+JOIN\b", re.IGNORECASE)
+_AIP_JOIN_NORMALIZATION = "LEFT OUTER JOIN -> LEFT JOIN"
 
 
 def _failure_manifest_payload(output_path: Path) -> dict[str, object]:
@@ -102,6 +107,18 @@ def is_esa_anonymous_quota_failure(error: BaseException, output_path: Path) -> b
     return classify_esa_fallback_failure(error, output_path) == _EXPLICIT_QUOTA_TRIGGER
 
 
+def normalize_aip_adql(query: str) -> tuple[str, int]:
+    """Return an AIP-compatible, scientifically equivalent ADQL spelling.
+
+    Gaia@AIP accepts ``LEFT JOIN`` but rejects the standard-equivalent spelling
+    ``LEFT OUTER JOIN`` at UWS submission. Only that keyword sequence is rewritten;
+    selected columns, predicates, expressions, ordering, row limits, and table names are
+    byte-preserved. The caller retains the original frozen query for provenance hashing.
+    """
+    normalized, replacements = _AIP_LEFT_OUTER_JOIN.subn("LEFT JOIN", str(query))
+    return normalized, replacements
+
+
 def _validate_aip_queue(queue: str) -> str:
     value = str(queue).strip()
     if value not in _ALLOWED_AIP_QUEUES:
@@ -127,7 +144,7 @@ def run_aip_async_query(
     primary_error_type: str = "unknown",
     fallback_trigger: str = _EXPLICIT_QUOTA_TRIGGER,
 ) -> dict[str, object]:
-    """Run the unchanged frozen query through Gaia@AIP's anonymous async queue."""
+    """Run the frozen query through Gaia@AIP with provider-only syntax normalization."""
     query_path, output_path, query = _prepare_query_paths(
         query_path,
         output_path,
@@ -148,6 +165,7 @@ def run_aip_async_query(
     minimum_http_timeout_seconds = validate_minimum_http_timeout(
         minimum_http_timeout_seconds
     )
+    provider_query, normalization_count = normalize_aip_adql(query)
 
     job = None
     tap_session = MinimumTimeoutSession(minimum_http_timeout_seconds)
@@ -161,13 +179,16 @@ def run_aip_async_query(
         "async_queue": queue,
         "fallback_trigger": fallback_trigger,
         "primary_error_type": primary_error_type,
+        "provider_query_normalization": _AIP_JOIN_NORMALIZATION,
+        "provider_query_normalization_count": normalization_count,
+        "frozen_query_provenance_preserved": True,
         "status_parse_retries_allowed": status_parse_retries,
         "status_parse_retry_backoff_seconds": status_parse_retry_backoff_seconds,
         "status_parse_failures": 0,
     }
     try:
         service = pyvo.dal.TAPService(AIP_GAIA_TAP_URL, session=tap_session)
-        job = service.submit_job(query, maxrec=maxrec, queue=queue)
+        job = service.submit_job(provider_query, maxrec=maxrec, queue=queue)
         job_details["job_url"] = str(job.url)
         job_details["job_id"] = str(job.job_id)
         job.run()
