@@ -30,7 +30,7 @@ jobs:
       - name: Install TAP client
         run: python -m pip install 'pyvo>=1.5' 'astropy>=6.1'
 
-      - name: Query one de-identified Gaia AIP NSS row
+      - name: Probe synchronous and asynchronous Gaia AIP contracts
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -50,22 +50,43 @@ jobs:
             AND bit_index IS NOT NULL
             AND corr_vec IS NOT NULL
           '''
-          result = service.run_sync(query, maxrec=1).to_table()
-          assert len(result) == 1
-          names = {str(name).lower() for name in result.colnames}
-          assert {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'} <= names
+          required = {'source_id', 'nss_solution_type', 'bit_index', 'corr_vec'}
+
+          sync_result = service.run_sync(query, maxrec=1).to_table()
+          assert len(sync_result) == 1
+          assert required <= {str(name).lower() for name in sync_result.colnames}
+
+          job = service.submit_job(query, maxrec=1, queue='30s')
+          try:
+              job.run()
+              job.wait(phases=['COMPLETED', 'ERROR', 'ABORTED'], timeout=180)
+              job.raise_if_error()
+              async_result = job.fetch_result().to_table()
+          finally:
+              try:
+                  job.delete()
+              except Exception:
+                  pass
+
+          assert len(async_result) == 1
+          assert required <= {str(name).lower() for name in async_result.colnames}
+
           receipt = {
-              'schema_version': '1.0',
+              'schema_version': '1.1',
               'candidate_safe': True,
               'status': 'success',
               'tap_service': 'Gaia@AIP',
               'anonymous_access': True,
-              'row_count': len(result),
+              'sync_success': True,
+              'async_success': True,
+              'async_queue': '30s',
+              'sync_row_count': len(sync_result),
+              'async_row_count': len(async_result),
               'required_columns_present': True,
               'claim_boundary': (
-                  'Service and schema contract only; no source identifier, row value, '
-                  'coordinate, orbit parameter, covariance value, or candidate identity '
-                  'is printed or persisted.'
+                  'Service, schema, and anonymous async-queue contract only; no source '
+                  'identifier, row value, coordinate, orbit parameter, covariance value, '
+                  'remote job identifier, or candidate identity is printed or persisted.'
               ),
           }
           Path('aip_probe_safe_receipt.json').write_text(
