@@ -1,10 +1,10 @@
 """Strict compatibility and post-command vetting hooks for the final capsule.
 
 The JSON adapter preserves compatibility with two legacy hybrid-time workflow keys
-without altering the real MEC diagnostic count.  The command hooks enrich the exact
-candidate Gaia table after ``prepare`` and append one-sigma mass/geometry vetting after
-``validate``.  Any hook failure terminates the Python process non-zero; source-level
-products remain ephemeral and encrypted by the enclosing workflow.
+without altering the real MEC diagnostic count. The command hooks enrich the exact
+candidate Gaia table after ``prepare`` and append one-sigma geometry plus formal Gaia
+covariance mass vetting after ``validate``. Any hook failure terminates the Python
+process non-zero; source-level products remain ephemeral and encrypted by the workflow.
 """
 
 from __future__ import annotations
@@ -71,18 +71,36 @@ def _run_vetting_hook() -> None:
             augment_candidate_gaia,
             augment_phase_products,
         )
+        from gaia_covariance_vetting import (
+            augment_candidate_covariance_fields,
+            augment_covariance_phase_products,
+        )
 
         command = sys.argv[1]
         if command == "prepare":
+            gaia_ecsv = _flag_value("--gaia-ecsv")
+            candidate_gaia = _flag_value("--candidate-gaia")
             augment_candidate_gaia(
-                gaia_ecsv=_flag_value("--gaia-ecsv"),
-                candidate_gaia=_flag_value("--candidate-gaia"),
+                gaia_ecsv=gaia_ecsv,
+                candidate_gaia=candidate_gaia,
+            )
+            augment_candidate_covariance_fields(
+                gaia_ecsv=gaia_ecsv,
+                candidate_gaia=candidate_gaia,
             )
         elif command == "validate":
+            candidate_gaia = _flag_value("--gaia")
+            phase_rows = _flag_value("--source-output")
+            phase_summary = _flag_value("--summary-output")
             augment_phase_products(
-                candidate_gaia=_flag_value("--gaia"),
-                phase_rows=_flag_value("--source-output"),
-                phase_summary=_flag_value("--summary-output"),
+                candidate_gaia=candidate_gaia,
+                phase_rows=phase_rows,
+                phase_summary=phase_summary,
+            )
+            augment_covariance_phase_products(
+                candidate_gaia=candidate_gaia,
+                phase_rows=phase_rows,
+                phase_summary=phase_summary,
             )
     except BaseException as error:  # fail closed at process boundary
         print(
