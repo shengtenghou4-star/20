@@ -14,10 +14,38 @@ from astropy.table import Table
 CAPSULE = Path(__file__).resolve().parents[1] / "capsules" / "hou_compact_final" / "hou_compact"
 sys.path.insert(0, str(CAPSULE))
 
-from gaia_covariance_vetting import (  # noqa: E402
-    augment_candidate_covariance_fields,
-    augment_covariance_phase_products,
-)
+from gaia_covariance_enrichment import augment_candidate_covariance_fields  # noqa: E402
+from gaia_covariance_vetting import augment_covariance_phase_products  # noqa: E402
+from hou_compact.reference_covariance import _nsstools_frame  # noqa: E402
+
+
+def test_serialized_corr_vec_becomes_numeric_for_reference_package() -> None:
+    frame = _nsstools_frame(
+        {
+            "source_id": "1234567890123456789",
+            "nss_solution_type": "SB1C",
+            "corr_vec": "[0.1,NaN,0.2,0.3,0.4,0.5]",
+            "period": 10.0,
+            "period_error": 0.1,
+            "center_of_mass_velocity": 5.0,
+            "center_of_mass_velocity_error": 0.5,
+            "semi_amplitude_primary": 150.0,
+            "semi_amplitude_primary_error": 1.0,
+            "t_periastron": 100.0,
+            "t_periastron_error": 0.2,
+        },
+        (
+            "period",
+            "center_of_mass_velocity",
+            "semi_amplitude_primary",
+            "t_periastron",
+        ),
+    )
+    vector = frame.iloc[0]["corr_vec"]
+    assert isinstance(vector, np.ndarray)
+    assert vector.shape == (6,)
+    assert np.isnan(vector[1])
+    assert vector[5] == 0.5
 
 
 def test_covariance_gate_is_deterministic_candidate_safe_and_monotonic() -> None:
@@ -25,7 +53,16 @@ def test_covariance_gate_is_deterministic_candidate_safe_and_monotonic() -> None
         directory = Path(temporary)
         source_a = "1234567890123456789"
         source_b = "3234567890123456789"
-        corr_vec = np.zeros((2, 231), dtype=float)
+        corr_values = np.zeros((2, 231), dtype=float)
+        corr_mask = np.ones((2, 231), dtype=bool)
+        corr_values[:, :6] = np.asarray(
+            [
+                [0.01, 0.02, 0.03, 0.04, 0.05, 0.06],
+                [0.02, 0.03, 0.04, 0.05, 0.06, 0.07],
+            ]
+        )
+        corr_mask[:, :6] = False
+        corr_vec = np.ma.masked_array(corr_values, mask=corr_mask)
         gaia_ecsv = directory / "gaia.ecsv"
         Table(
             {
@@ -62,10 +99,16 @@ def test_covariance_gate_is_deterministic_candidate_safe_and_monotonic() -> None
             candidate_gaia=candidate_gaia,
         )
         assert enrichment["candidate_sources"] == 2
+        assert enrichment["corr_vec_serialization"] == (
+            "flat JSON numeric array with NaN padding"
+        )
         with candidate_gaia.open("r", encoding="utf-8", newline="") as handle:
             enriched = list(csv.DictReader(handle))
         assert enriched[0]["bit_index"] == "31"
         assert enriched[0]["center_of_mass_velocity_error"] == "0.5"
+        serialized = json.loads(enriched[0]["corr_vec"])
+        assert serialized[:6] == [0.01, 0.02, 0.03, 0.04, 0.05, 0.06]
+        assert np.isnan(serialized[6])
 
         phase_rows = directory / "phase.csv"
         phase_rows.write_text(
@@ -75,12 +118,18 @@ def test_covariance_gate_is_deterministic_candidate_safe_and_monotonic() -> None
             encoding="utf-8",
         )
         phase_summary = directory / "summary.json"
-        phase_summary.write_text(json.dumps({"candidate_safe": True}), encoding="utf-8")
+        phase_summary.write_text(
+            json.dumps({"candidate_safe": True}),
+            encoding="utf-8",
+        )
         reference = SimpleNamespace(
             maximum_absolute_difference=0.0,
             reference_api="nsstools.NssSource.covmat",
         )
-        with patch("gaia_covariance_vetting.compare_with_nsstools", return_value=reference):
+        with patch(
+            "gaia_covariance_vetting.compare_with_nsstools",
+            return_value=reference,
+        ):
             result = augment_covariance_phase_products(
                 candidate_gaia=candidate_gaia,
                 phase_rows=phase_rows,
