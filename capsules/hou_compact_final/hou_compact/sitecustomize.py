@@ -13,10 +13,13 @@ import atexit
 import json as _json
 import os
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
 _ORIGINAL_LOAD = _json.load
+_LONG_INTEGER = re.compile(r"(?<![0-9])[0-9]{10,20}(?![0-9])")
+_URL = re.compile(r"https?://\S+")
 
 
 def _is_fits_authoritative_hybrid(data: object) -> bool:
@@ -65,7 +68,43 @@ def _flag_value(name: str) -> Path:
     return Path(sys.argv[index + 1])
 
 
+def _safe_error_payload(command: str, error: BaseException) -> dict[str, object]:
+    message = _LONG_INTEGER.sub("<redacted-id>", str(error))
+    message = _URL.sub("<redacted-url>", message)
+    return {
+        "schema_version": "0.1",
+        "candidate_safe": True,
+        "status": "failure",
+        "stage": command,
+        "error_type": type(error).__name__,
+        "error_message": message[:1000],
+        "claim_boundary": (
+            "Sanitized post-command vetting failure only; no source identity, coordinate, "
+            "obsid, RV, timestamp, orbit value, covariance coefficient, or mass is disclosed."
+        ),
+    }
+
+
+def _safe_error_path(command: str) -> Path:
+    flag = "--candidate-gaia" if command == "prepare" else "--source-output"
+    try:
+        parent = _flag_value(flag).parent
+    except BaseException:
+        parent = Path("relay_work")
+    return parent / "gaia_vetting_safe_error.json"
+
+
+def _persist_safe_error(command: str, error: BaseException) -> None:
+    path = _safe_error_path(command)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        _json.dumps(_safe_error_payload(command, error), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
 def _run_vetting_hook() -> None:
+    command = sys.argv[1] if len(sys.argv) > 1 else "unknown"
     try:
         from gaia_candidate_vetting import (
             augment_candidate_gaia,
@@ -74,7 +113,6 @@ def _run_vetting_hook() -> None:
         from gaia_covariance_enrichment import augment_candidate_covariance_fields
         from gaia_covariance_vetting import augment_covariance_phase_products
 
-        command = sys.argv[1]
         if command == "prepare":
             gaia_ecsv = _flag_value("--gaia-ecsv")
             candidate_gaia = _flag_value("--candidate-gaia")
@@ -101,6 +139,10 @@ def _run_vetting_hook() -> None:
                 phase_summary=phase_summary,
             )
     except BaseException as error:  # fail closed at process boundary
+        try:
+            _persist_safe_error(command, error)
+        except BaseException:
+            pass
         print(
             f"HOU-COMPACT post-command vetting failed: {type(error).__name__}: {error}",
             file=sys.stderr,
