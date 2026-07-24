@@ -12,10 +12,14 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hou-compact-real-corrvec-probe
+  cancel-in-progress: true
+
 jobs:
   real-corrvec-contract:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
     env:
       PYTHONPATH: capsules/hou_compact_final/hou_compact:src
     steps:
@@ -43,6 +47,8 @@ jobs:
             python scripts/run_gaia_query.py \
               --query queries/gaia_covariance_real_row_probe.adql \
               --output gaia_covariance_probe.ecsv \
+              --mode sync \
+              --maxrec 1 \
               --overwrite >> gaia_query.log 2>&1
             code=$?
             if test "$code" = 0 && test -s gaia_covariance_probe.ecsv; then
@@ -50,7 +56,7 @@ jobs:
               break
             fi
             printf 'exit_code=%s\n' "$code" >> gaia_query.log
-            sleep $((attempt * 10))
+            sleep $((attempt * 5))
           done
           printf '%s\n' "$ok" > gaia_query.status
           exit 0
